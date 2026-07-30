@@ -1,10 +1,9 @@
 import pandas as pd
 import glob
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
 
 # import dataset
-files_path = glob.glob("Dataset/*.csv")
+files_path = glob.glob("Dataset/E025-26.csv")
 files_list = []
 
 # read dataset
