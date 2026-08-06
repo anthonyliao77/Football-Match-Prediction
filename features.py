@@ -1,8 +1,22 @@
 """
 Computing features for the evaluation model.
 """
-
 import pandas as pd
+
+def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    '''
+    Creates a new DataFrame containing pre-match features for
+    each fixture based on each team's historical performance.
+
+    Parameters:
+        dataframe (pd.DataFrame): DataFrame containing historical match
+            data for all teams, which includes match statistics and results.
+
+    Returns:
+        pd.DataFrame: A new DataFrame containing the original match data
+        along with features such as recent form, goals scored,
+        goals conceded and other historical statistics.
+    '''
 
 def last5_points(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) -> int:
     '''
@@ -14,7 +28,7 @@ def last5_points(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) -> int:
             dataframe (pandas.Dataframe): DataFrame containing all match data.
 
         Returns:
-            points (int): Total points earned in the team's previous five matches. 
+            int: Total points earned in the team's previous five matches. 
     '''
 
 def last5_goal_scored(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) -> int:
@@ -27,7 +41,7 @@ def last5_goal_scored(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) ->
             dataframe (pandas.Dataframe): DataFrame containing all match data.
 
         Returns:
-            goal_conceded (int): The total goals scored in the team's previous five matches.
+            int: The total goals scored in the team's previous five matches.
     '''
 
 def last5_goal_conceded(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) -> int:
@@ -40,7 +54,7 @@ def last5_goal_conceded(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) 
             dataframe (pandas.Dataframe): DataFrame containing all match data.
 
         Returns:
-            goal_conceded (int): The total goals conceded in the team's previous five matches.
+            int: The total goals conceded in the team's previous five matches.
     '''
 
 def last5_goal_difference(goal_scored: int, goal_conceded: int) -> int:
@@ -52,6 +66,6 @@ def last5_goal_difference(goal_scored: int, goal_conceded: int) -> int:
             goals_conceded (int): Amount of goals the team has conceded. 
 
         Returns:
-            goal_difference (int): The goal difference in the team's previous five matches.
+            int: The goal difference in the team's previous five matches.
     '''
     return goal_scored - goal_conceded
