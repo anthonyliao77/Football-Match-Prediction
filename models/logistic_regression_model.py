@@ -1,10 +1,11 @@
-import pandas as pd
 import glob
+import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 
 # import dataset
-files_path = glob.glob("Dataset/*.csv")
+# choose football league
+files_path = glob.glob("PremierLeague/*.csv")
 files_list = []
 
 # read dataset
