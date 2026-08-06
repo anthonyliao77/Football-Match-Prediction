@@ -1,4 +1,8 @@
-"""Glob is used for specific search paths"""
+"""
+Creates and evaluates a football match prediction model using
+historical match data from football-data.co.uk.
+"""
+
 import glob
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
