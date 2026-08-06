@@ -1,3 +1,4 @@
+"""Glob is used for specific search paths"""
 import glob
 import pandas as pd
 from sklearn.linear_model import LogisticRegression

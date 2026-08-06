@@ -1,3 +1,4 @@
+"""Glob is used for specific search paths"""
 import glob
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -5,7 +6,7 @@ from sklearn.metrics import accuracy_score
 
 # import dataset
 # choose football league
-files_path = glob.glob("PremierLeague/*.csv")
+files_path = glob.glob("SerieA/*.csv")
 files_list = []
 
 # read dataset
@@ -20,8 +21,8 @@ dataframe = pd.concat(files_list, ignore_index=True)
 # Predict 25/26 season
 
 dataframe["Date"] = pd.to_datetime(dataframe["Date"], dayfirst=True)
-train_data = dataframe[dataframe["Date"]<= "25-05-2025"]
-validation_data = dataframe[(dataframe["Date"] >= "16-08-2025") & (dataframe["Date"] <= "25-05-26")]
+train_data = dataframe[dataframe["Date"]<= "31-05-2025"]
+validation_data = dataframe[(dataframe["Date"] >= "10-08-2025") & (dataframe["Date"] <= "31-05-26")]
 
 # select important cols in dataset
 cols = [
