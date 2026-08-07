@@ -19,6 +19,29 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         goals conceded and other historical statistics.
     '''
 
+def calculate_points(result: str, home: bool) -> int:
+    """
+    Calculates points earned from a match result.
+
+    Parameters:
+        result (str): Match result (H, D, A).
+        home (bool): Whether the team played at home.
+
+    Returns:
+        int: Points earned.
+    """
+
+    if result == "D":
+        return 1
+
+    if result == "H" and home:
+        return 3
+
+    if result == "A" and not home:
+        return 3
+
+    return 0
+
 def last5_points(team_points: list) -> int:
     '''
     Function used to compute a team's perfomance in last five matches.
