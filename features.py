@@ -1,6 +1,7 @@
 """
 Computing features for the evaluation model.
 """
+from collections import defaultdict
 import pandas as pd
 
 def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -18,14 +19,12 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         goals conceded and other historical statistics.
     '''
 
-def last5_points(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) -> int:
+def last5_points(team_points: list) -> int:
     '''
     Function used to compute a team's perfomance in last five matches.
     
         Parameters:
-            team (str): Name of the team.
-            data (pandas.Timestamp): Date of the current match.
-            dataframe (pandas.Dataframe): DataFrame containing all match data.
+            team_stats (list): List of team's historical data.
 
         Returns:
             int: Total points earned in the team's previous five matches. 
