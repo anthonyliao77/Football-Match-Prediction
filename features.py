@@ -52,19 +52,19 @@ def last5_points(team_points: list) -> int:
             int: Total points earned in the team's previous five matches. 
     '''
 
-    return sum(match["points"] for match in team_points[-5:])
+    return sum(match["points"] for match in team_points)
 
 def last5_goal_scored(team_goals: list) -> int:
     ''' 
     Function used to compute a team's goal scored in the last five matches.
     
         Parameters:
-            team (str): Name of the team.
+            team_goals (list)): List of team's historical data.
 
         Returns:
             int: The total goals scored in the team's previous five matches.
     '''
-    return sum(match["goals_scored"] for match in team_goals[-5:])
+    return sum(match["goals_scored"] for match in team_goals)
 
 
 def last5_goal_conceded(team_conceded: list) -> int:
@@ -72,7 +72,7 @@ def last5_goal_conceded(team_conceded: list) -> int:
     Function used to compute the amount of goals the team has conceded in the last five matches.
     
         Parameters:
-            team (str): Name of the team.
+            team_conceded (list): List of team's historical data.
 
         Returns:
             int: The total goals conceded in the team's previous five matches.
