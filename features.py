@@ -18,7 +18,6 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         along with features such as recent form, goals scored,
         goals conceded and other historical statistics.
     '''
-
 def calculate_points(result: str, home: bool) -> int:
     """
     Calculates points earned from a match result.
@@ -53,31 +52,32 @@ def last5_points(team_points: list) -> int:
             int: Total points earned in the team's previous five matches. 
     '''
 
-def last5_goal_scored(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) -> int:
+    return sum(match["points"] for match in team_points[-5:])
+
+def last5_goal_scored(team_goals: list) -> int:
     ''' 
     Function used to compute a team's goal scored in the last five matches.
     
         Parameters:
             team (str): Name of the team.
-            data (pandas.Timestamp): Date of the current match.
-            dataframe (pandas.Dataframe): DataFrame containing all match data.
 
         Returns:
             int: The total goals scored in the team's previous five matches.
     '''
+    return sum(match["goals_scored"] for match in team_goals[-5:])
 
-def last5_goal_conceded(team: str, date: pd.Timestamp, dataframe: pd.DataFrame) -> int:
+
+def last5_goal_conceded(team_conceded: list) -> int:
     ''' 
     Function used to compute the amount of goals the team has conceded in the last five matches.
     
         Parameters:
             team (str): Name of the team.
-            data (pandas.Timestamp): Date of the current match.
-            dataframe (pandas.Dataframe): DataFrame containing all match data.
 
         Returns:
             int: The total goals conceded in the team's previous five matches.
     '''
+    return sum(match["goals_conceded"] for match in team_conceded)
 
 def last5_goal_difference(goal_scored: int, goal_conceded: int) -> int:
     ''' 
