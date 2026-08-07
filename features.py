@@ -18,6 +18,69 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         along with features such as recent form, goals scored,
         goals conceded and other historical statistics.
     '''
+
+    team_stats = defaultdict(list)
+    features = []
+
+    for _, match in dataframe.iterrows():
+        home_team = match["HomeTeam"]
+        away_team = match["AwayTeam"]
+
+        # Collect team data from last five matches
+        home_history = team_stats[home_team][-5:]
+        away_history = team_stats[away_team][-5:]
+
+        # Calculate all new features
+        home_last5_points = last5_points(home_history)
+        away_last5_points = last5_points(away_history)
+
+        home_last5_goals_scored = last5_goal_scored(home_history)
+        away_last5_goals_scored = last5_goal_scored(away_history)
+
+        home_last5_goals_conceded = last5_goal_conceded(home_history)
+        away_last5_goals_conceded = last5_goal_conceded(away_history)
+
+        home_last5_goal_diff = last5_goal_difference(
+        home_last5_goals_scored,
+        home_last5_goals_conceded
+        )
+
+        away_last5_goal_diff = last5_goal_difference(
+        away_last5_goals_scored,
+        away_last5_goals_conceded
+        )
+
+        # Add own features to new dataframe
+        features.append({
+            "Date": match["Date"],
+            "HomeTeam": home_team,
+            "AwayTeam": away_team,
+            "HomePT5": home_last5_points,
+            "AwayPT5": away_last5_points,
+            "HomeGS5": home_last5_goals_scored,
+            "AwayGS5": away_last5_goals_scored,
+            "HomeGC5": home_last5_goals_conceded,
+            "AwayGC5": away_last5_goals_conceded,
+            "HomeGD5": home_last5_goal_diff,
+            "AwayGD5": away_last5_goal_diff,
+            "FTR": match["FTR"],
+        })
+
+        # store team stats
+        team_stats[home_team].append({
+        "points": calculate_points(match["FTR"], True),
+        "goals_scored": match["FTHG"],
+        "goals_conceded": match["FTAG"]
+        })
+
+        team_stats[away_team].append({
+        "points": calculate_points(match["FTR"], False),
+        "goals_scored": match["FTAG"],
+        "goals_conceded": match["FTHG"]
+        })
+
+    return pd.DataFrame(features)
+
 def calculate_points(result: str, home: bool) -> int:
     """
     Calculates points earned from a match result.
@@ -59,7 +122,7 @@ def last5_goal_scored(team_goals: list) -> int:
     Function used to compute a team's goal scored in the last five matches.
     
         Parameters:
-            team_goals (list)): List of team's historical data.
+            team_goals (list): List of team's historical data.
 
         Returns:
             int: The total goals scored in the team's previous five matches.
