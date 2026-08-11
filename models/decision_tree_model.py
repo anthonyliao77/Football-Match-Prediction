@@ -26,8 +26,11 @@ dataframe = pd.concat(files_list, ignore_index=True)
 # Predict 25/26 season
 
 dataframe["Date"] = pd.to_datetime(dataframe["Date"], dayfirst=True)
-train_data = dataframe[dataframe["Date"]<= "31-05-2025"]
-validation_data = dataframe[(dataframe["Date"] >= "10-08-2025") & (dataframe["Date"] <= "31-05-26")]
+train_data = dataframe[dataframe["Date"] <= "31-05-2025"]
+validation_data = dataframe[
+    (dataframe["Date"] >= "10-08-2025")
+    & (dataframe["Date"] <= "31-05-26")
+]
 
 # select important cols in dataset
 cols = [
