@@ -2,7 +2,9 @@
 Computing features for the evaluation model.
 """
 from collections import defaultdict
+
 import pandas as pd
+
 
 def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
     '''
@@ -41,13 +43,13 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         away_last5_goals_conceded = last5_goal_conceded(away_history)
 
         home_last5_goal_diff = last5_goal_difference(
-        home_last5_goals_scored,
-        home_last5_goals_conceded
+            home_last5_goals_scored,
+            home_last5_goals_conceded
         )
 
         away_last5_goal_diff = last5_goal_difference(
-        away_last5_goals_scored,
-        away_last5_goals_conceded
+            away_last5_goals_scored,
+            away_last5_goals_conceded
         )
 
         # Add own features to new dataframe
@@ -68,18 +70,19 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
 
         # store team stats
         team_stats[home_team].append({
-        "points": calculate_points(match["FTR"], True),
-        "goals_scored": match["FTHG"],
-        "goals_conceded": match["FTAG"]
+            "points": calculate_points(match["FTR"], True),
+            "goals_scored": match["FTHG"],
+            "goals_conceded": match["FTAG"]
         })
 
         team_stats[away_team].append({
-        "points": calculate_points(match["FTR"], False),
-        "goals_scored": match["FTAG"],
-        "goals_conceded": match["FTHG"]
+            "points": calculate_points(match["FTR"], False),
+            "goals_scored": match["FTAG"],
+            "goals_conceded": match["FTHG"]
         })
 
     return pd.DataFrame(features)
+
 
 def calculate_points(result: str, home: bool) -> int:
     """
@@ -104,23 +107,23 @@ def calculate_points(result: str, home: bool) -> int:
 
     return 0
 
+
 def last5_points(team_points: list) -> int:
     '''
     Function used to compute a team's perfomance in last five matches.
-    
         Parameters:
             team_stats (list): List of team's historical data.
 
         Returns:
-            int: Total points earned in the team's previous five matches. 
+            int: Total points earned in the team's previous five matches.
     '''
 
     return sum(match["points"] for match in team_points)
 
+
 def last5_goal_scored(team_goals: list) -> int:
-    ''' 
+    '''
     Function used to compute a team's goal scored in the last five matches.
-    
         Parameters:
             team_goals (list): List of team's historical data.
 
@@ -131,9 +134,9 @@ def last5_goal_scored(team_goals: list) -> int:
 
 
 def last5_goal_conceded(team_conceded: list) -> int:
-    ''' 
-    Function used to compute the amount of goals the team has conceded in the last five matches.
-    
+    '''
+    Function used to compute the amount of goals the team has conceded
+    in the last five matches.
         Parameters:
             team_conceded (list): List of team's historical data.
 
@@ -142,10 +145,10 @@ def last5_goal_conceded(team_conceded: list) -> int:
     '''
     return sum(match["goals_conceded"] for match in team_conceded)
 
+
 def last5_goal_difference(goal_scored: int, goal_conceded: int) -> int:
-    ''' 
+    '''
     Function used to compute a team's goal difference in the last five matches.
-    
         Parameters:
             goals_scored (int): Amount of goals the team has scored.
             goals_conceded (int): Amount of goals the team has conceded. 

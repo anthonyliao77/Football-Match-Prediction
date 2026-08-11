@@ -3,7 +3,9 @@ Loads and combines football match data from dataset.
 """
 
 import glob
+
 import pandas as pd
+
 from features import create_features
 
 # Choose football league

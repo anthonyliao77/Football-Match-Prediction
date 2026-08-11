@@ -4,6 +4,7 @@ historical match data from football-data.co.uk.
 """
 
 import glob
+
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -30,18 +31,18 @@ validation_data = dataframe[(dataframe["Date"] >= "10-08-2025") & (dataframe["Da
 
 # select important cols in dataset
 cols = [
-'HS',
-'AS',
-'HST',
-'AST',
-'HF',
-'AF',
-'HC',
-'AC',
-'HY',
-'AY',
-'HR',
-'AR',
+    'HS',
+    'AS',
+    'HST',
+    'AST',
+    'HF',
+    'AF',
+    'HC',
+    'AC',
+    'HY',
+    'AY',
+    'HR',
+    'AR',
 ]
 
 # training data

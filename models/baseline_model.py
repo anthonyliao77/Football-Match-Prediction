@@ -4,6 +4,7 @@ historical match data from football-data.co.uk.
 """
 
 import glob
+
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 
@@ -22,18 +23,18 @@ dataframe = pd.concat(files_list, ignore_index=True)
 
 # select important cols in dataset
 cols = [
-'HS',
-'AS',
-'HST',
-'AST',
-'HF',
-'AF',
-'HC',
-'AC',
-'HY',
-'AY',
-'HR',
-'AR',
+    'HS',
+    'AS',
+    'HST',
+    'AST',
+    'HF',
+    'AF',
+    'HC',
+    'AC',
+    'HY',
+    'AY',
+    'HR',
+    'AR',
 ]
 
 # input(X) and prediction(y)

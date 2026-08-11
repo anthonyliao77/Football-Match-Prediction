@@ -4,7 +4,7 @@ Stores feature definitions for the evaluation model.
 
 feature_columns = [
     # Team points last five matches
-    "HomePT5",  
+    "HomePT5",
     "AwayPT5",
     # Team goals scored last five matches
     "HomeGS5",
