@@ -15,7 +15,7 @@ from data_loader import load_data
 from features import create_features
 
 # Choosen league to train and evaluate the model on
-LEAGUE = "LaLiga"
+LEAGUE = "PremierLeague"
 
 # Load and combine match data for the specified league
 dataframe = load_data(league=LEAGUE)
@@ -37,9 +37,14 @@ val_y = validation_data["FTR"]
 
 # pokemon training of data
 model = RandomForestClassifier(
-    random_state=42,
-    n_estimators=200
-    )
+    n_estimators=200,
+    max_depth=None,
+    min_samples_split=2,
+    min_samples_leaf=1,
+    max_features="sqrt",
+    random_state=67,
+    n_jobs=-1
+)
 model.fit(train_X, train_y)
 
 # magic prediction
