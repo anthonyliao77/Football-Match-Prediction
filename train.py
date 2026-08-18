@@ -51,3 +51,5 @@ print(results.head(10))
 # accuracy recording
 accuracy = accuracy_score(val_y, prediction)
 print(accuracy)
+# Match distribution of validation data
+print(validation_data["FTR"].value_counts(normalize=True))
