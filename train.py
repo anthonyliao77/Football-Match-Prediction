@@ -110,7 +110,6 @@ print(confusion_matrix(val_y, prediction))
 # XGBoost model
 xgb = XGBClassifier(
     n_estimators=200,
-    max_depth=None,
     random_state=67,
     n_jobs=-1
 )
