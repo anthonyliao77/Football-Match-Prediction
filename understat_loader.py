@@ -30,5 +30,13 @@ def load_understat_data(
         leagues=league,
         seasons=seasons,
     )
+    # Load the schedule data from understat
+    xg_data = understat.read_schedule()
+    xg_data["date"] = pd.to_datetime(xg_data["date"], dayfirst=True)
+    xg_data = xg_data.sort_values("date").reset_index(drop=True)
+    # Normalize the date column to remove time information
+    xg_data["date"] = pd.to_datetime(
+        xg_data["date"]
+    ).dt.normalize()
 
-    return understat.read_schedule()
+    return xg_data
