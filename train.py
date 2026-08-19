@@ -2,8 +2,9 @@
 Trains, validates and evaluates the prediction model.
 """
 
+import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, confusion_matrix
 
 from config import (
     TRAIN_END_DATE,
@@ -15,7 +16,7 @@ from data_loader import load_data
 from features import create_features
 
 # Choosen league to train and evaluate the model on
-LEAGUE = "PremierLeague"
+LEAGUE = "SerieA"
 
 # Load and combine match data for the specified league
 dataframe = load_data(league=LEAGUE)
@@ -53,8 +54,20 @@ results = validation_data[['Date', 'HomeTeam', 'AwayTeam', 'FTR']].copy()
 results['Prediction'] = prediction
 print(results.head(10))
 
-# accuracy recording
+# Testing accuracy, confusion matrix and feature importance
 accuracy = accuracy_score(val_y, prediction)
 print(accuracy)
+
+# Confusion matrix
+print(model.classes_)
+print(confusion_matrix(val_y, prediction))
+
 # Match distribution of validation data
 print(validation_data["FTR"].value_counts(normalize=True))
+
+# Feature importance
+importance = pd.Series(
+    model.feature_importances_,
+    index=train_X.columns
+).sort_values(ascending=False)
+print(importance)
