@@ -2,6 +2,21 @@
 Stores feature definitions for the evaluation model.
 """
 
+LEAGUES = {
+    "PremierLeague": {
+        "football_data": "Football-data/PremierLeague",
+        "understat": "ENG-Premier League",
+    },
+    "LaLiga": {
+        "football_data": "Football-data/LaLiga",
+        "understat": "ESP-La Liga",
+    },
+    "SerieA": {
+        "football_data": "Football-data/SerieA",
+        "understat": "ITA-Serie A",
+    },
+}
+
 TRAIN_END_DATE = "2025-05-31"
 VALIDATION_START_DATE = "2025-08-15"
 VALIDATION_END_DATE = "2026-06-01"
