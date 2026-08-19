@@ -5,6 +5,10 @@ Trains, validates and evaluates the prediction model.
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.preprocessing import LabelEncoder
+
+# pyrefly: ignore [missing-import]
+from xgboost import XGBClassifier
 
 from config import (
     FEATURE_COLUMNS,
@@ -63,8 +67,15 @@ train_y = train_data["FTR"]
 val_X = validation_data[FEATURE_COLUMNS]
 val_y = validation_data["FTR"]
 
-# pokemon training of data
-model = RandomForestClassifier(
+# Encode target labels for XGBoost
+# Convert A/D/H to 0/1/2 for multiclass classification
+label_encoder = LabelEncoder()
+
+train_y_encoded = label_encoder.fit_transform(train_y)
+
+
+# Random Forest model
+random_forest = RandomForestClassifier(
     n_estimators=200,
     max_depth=None,
     min_samples_split=2,
@@ -73,28 +84,91 @@ model = RandomForestClassifier(
     random_state=67,
     n_jobs=-1
 )
-model.fit(train_X, train_y)
 
-# magic prediction
-prediction = model.predict(val_X)
-results = validation_data[['Date', 'HomeTeam', 'AwayTeam', 'FTR']].copy()
-results['Prediction'] = prediction
-print(results.head(10))
+random_forest.fit(train_X, train_y)
 
-# Testing accuracy, confusion matrix and feature importance
+# Random Forest prediction
+prediction = random_forest.predict(val_X)
+
+rf_results = validation_data[
+    ["Date", "HomeTeam", "AwayTeam", "FTR"]
+].copy()
+
+rf_results["Prediction"] = prediction
+
+print(rf_results.head(10))
+
+# Random Forest accuracy
 accuracy = accuracy_score(val_y, prediction)
-print(accuracy)
+print("Random Forest accuracy:", accuracy)
 
-# Confusion matrix
-print(model.classes_)
+# Random Forest confusion matrix
+print(random_forest.classes_)
 print(confusion_matrix(val_y, prediction))
+
+
+# XGBoost model
+xgb = XGBClassifier(
+    n_estimators=200,
+    max_depth=None,
+    random_state=67,
+    n_jobs=-1
+)
+
+xgb.fit(train_X, train_y_encoded)
+
+# XGBoost prediction
+xgb_prediction_encoded = xgb.predict(val_X)
+
+# Convert predictions back to A/D/H
+xgb_prediction = label_encoder.inverse_transform(
+    xgb_prediction_encoded
+)
+
+# XGBoost results
+xgb_results = validation_data[
+    ["Date", "HomeTeam", "AwayTeam", "FTR"]
+].copy()
+
+xgb_results["Prediction"] = xgb_prediction
+
+print(xgb_results.head(10))
+
+# XGBoost accuracy
+xgb_accuracy = accuracy_score(val_y, xgb_prediction)
+
+print("XGBoost accuracy:", xgb_accuracy)
+
+# XGBoost confusion matrix
+print(label_encoder.classes_)
+print(
+    confusion_matrix(
+        val_y,
+        xgb_prediction,
+        labels=label_encoder.classes_
+    )
+)
+
 
 # Match distribution of validation data
 print(validation_data["FTR"].value_counts(normalize=True))
 
-# Feature importance
-importance = pd.Series(
-    model.feature_importances_,
+
+# Random Forest feature importance
+rf_importance = pd.Series(
+    random_forest.feature_importances_,
     index=train_X.columns
 ).sort_values(ascending=False)
-print(importance)
+
+print("Random Forest feature importance:")
+print(rf_importance)
+
+
+# XGBoost feature importance
+xgb_importance = pd.Series(
+    xgb.feature_importances_,
+    index=train_X.columns
+).sort_values(ascending=False)
+
+print("XGBoost feature importance:")
+print(xgb_importance)
