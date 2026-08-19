@@ -66,6 +66,12 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
             away_last5_goals_scored
         )
 
+        home_last5_xg = last5_xg(home_history)
+        away_last5_xg = last5_xg(away_history)
+
+        home_last5_xga = last5_xg(away_history)
+        away_last5_xga = last5_xg(home_history)
+
         # Add own features to new dataframe
         features.append({
             "Date": match["Date"],
@@ -85,6 +91,10 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
             "AwayS5": away_last5_shots,
             "HomeSC5": home_last5_shots_conversion,
             "AwaySC5": away_last5_shots_conversion,
+            "HomeXG5": home_last5_xg,
+            "AwayXG5": away_last5_xg,
+            "HomeXGA5": home_last5_xga,
+            "AwayXGA5": away_last5_xga,
             "FTR": match["FTR"],
         })
 
@@ -94,7 +104,9 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
             "goals_scored": match["FTHG"],
             "goals_conceded": match["FTAG"],
             "shots_on_target": match["HST"],
-            "shots": match["HS"]
+            "shots": match["HS"],
+            "xG": match["home_xg"],
+            "xGA": match["away_xg"]
         })
 
         team_stats[away_team].append({
@@ -102,7 +114,9 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
             "goals_scored": match["FTAG"],
             "goals_conceded": match["FTHG"],
             "shots_on_target": match["AST"],
-            "shots": match["AS"]
+            "shots": match["AS"],
+            "xG": match["away_xg"],
+            "xGA": match["home_xg"]
         })
 
     return pd.DataFrame(features)
@@ -220,3 +234,16 @@ def last5_shots_conversion(shots: int, goals: int) -> float:
     if shots == 0:
         return 0.0
     return goals / shots
+
+
+def last5_xg(team_xg: list) -> float:
+    '''
+    Function used to compute a team's expected goals in the last five matches.
+        Parameters:
+            team_xg (list): List of team's historical data.
+
+        Returns:
+            float: The total expected goals in the team's
+            previous five matches.
+    '''
+    return sum(match["xG"] for match in team_xg)
