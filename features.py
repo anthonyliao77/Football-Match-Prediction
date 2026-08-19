@@ -52,6 +52,12 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
             away_last5_goals_conceded
         )
 
+        home_last5_shots_on_target = last5_shots_on_target(home_history)
+        away_last5_shots_on_target = last5_shots_on_target(away_history)
+
+        home_last5_shots = last5_shots(home_history)
+        away_last5_shots = last5_shots(away_history)
+
         # Add own features to new dataframe
         features.append({
             "Date": match["Date"],
@@ -65,6 +71,10 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
             "AwayGC5": away_last5_goals_conceded,
             "HomeGD5": home_last5_goal_diff,
             "AwayGD5": away_last5_goal_diff,
+            "HomeSOT5": home_last5_shots_on_target,
+            "AwaySOT5": away_last5_shots_on_target,
+            "HomeS5": home_last5_shots,
+            "AwayS5": away_last5_shots,
             "FTR": match["FTR"],
         })
 
@@ -72,13 +82,17 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         team_stats[home_team].append({
             "points": calculate_points(match["FTR"], True),
             "goals_scored": match["FTHG"],
-            "goals_conceded": match["FTAG"]
+            "goals_conceded": match["FTAG"],
+            "shots_on_target": match["HST"],
+            "shots": match["HS"]
         })
 
         team_stats[away_team].append({
             "points": calculate_points(match["FTR"], False),
             "goals_scored": match["FTAG"],
-            "goals_conceded": match["FTHG"]
+            "goals_conceded": match["FTHG"],
+            "shots_on_target": match["AST"],
+            "shots": match["AS"]
         })
 
     return pd.DataFrame(features)
@@ -157,3 +171,27 @@ def last5_goal_difference(goal_scored: int, goal_conceded: int) -> int:
             int: The goal difference in the team's previous five matches.
     '''
     return goal_scored - goal_conceded
+
+
+def last5_shots_on_target(team_shots_on_target: list) -> int:
+    '''
+    Function used to compute a team's shots on target in the last five matches.
+        Parameters:
+            team_shots_on_target (list): List of team's historical data.
+
+        Returns:
+            int: The total shots on target in the team's previous five matches.
+    '''
+    return sum(match["shots_on_target"] for match in team_shots_on_target)
+
+
+def last5_shots(team_shots: list) -> int:
+    '''
+    Function used to compute a team's shots in the last five matches.
+        Parameters:
+            team_shots (list): List of team's historical data.
+
+        Returns:
+            int: The total shots in the team's previous five matches.
+    '''
+    return sum(match["shots"] for match in team_shots)
