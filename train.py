@@ -16,7 +16,7 @@ from data_loader import load_data
 from features import create_features
 
 # Choosen league to train and evaluate the model on
-LEAGUE = "SerieA"
+LEAGUE = "Football-data/SerieA"
 
 # Load and combine match data for the specified league
 dataframe = load_data(league=LEAGUE)
