@@ -7,11 +7,11 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix
 
 from config import (
+    FEATURE_COLUMNS,
     LEAGUES,
     TRAIN_END_DATE,
     VALIDATION_END_DATE,
     VALIDATION_START_DATE,
-    feature_columns,
 )
 from data_loader import load_data
 from features import create_features
@@ -56,11 +56,11 @@ validation_data = dataframe[
 ]
 
 # training data
-train_X = train_data[feature_columns]
+train_X = train_data[FEATURE_COLUMNS]
 train_y = train_data["FTR"]
 
 # validation data
-val_X = validation_data[feature_columns]
+val_X = validation_data[FEATURE_COLUMNS]
 val_y = validation_data["FTR"]
 
 # pokemon training of data

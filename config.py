@@ -48,7 +48,7 @@ TRAIN_END_DATE = "2025-05-31"
 VALIDATION_START_DATE = "2025-08-15"
 VALIDATION_END_DATE = "2026-06-01"
 
-feature_columns = [
+FEATURE_COLUMNS = [
     # Team points last five matches
     "HomePT5",
     "AwayPT5",
