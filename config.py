@@ -25,4 +25,7 @@ feature_columns = [
     # Team shots last five matches
     "HomeS5",
     "AwayS5",
+    # Team shots conversion last five matches
+    "HomeSC5",
+    "AwaySC5",
 ]

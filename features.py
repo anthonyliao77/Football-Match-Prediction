@@ -58,6 +58,15 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         home_last5_shots = last5_shots(home_history)
         away_last5_shots = last5_shots(away_history)
 
+        home_last5_shots_conversion = last5_shots_conversion(
+            home_last5_shots,
+            home_last5_goals_scored
+        )
+        away_last5_shots_conversion = last5_shots_conversion(
+            away_last5_shots,
+            away_last5_goals_scored
+        )
+
         # Add own features to new dataframe
         features.append({
             "Date": match["Date"],
@@ -75,6 +84,8 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
             "AwaySOT5": away_last5_shots_on_target,
             "HomeS5": home_last5_shots,
             "AwayS5": away_last5_shots,
+            "HomeSC5": home_last5_shots_conversion,
+            "AwaySC5": away_last5_shots_conversion,
             "FTR": match["FTR"],
         })
 
@@ -195,3 +206,19 @@ def last5_shots(team_shots: list) -> int:
             int: The total shots in the team's previous five matches.
     '''
     return sum(match["shots"] for match in team_shots)
+
+
+def last5_shots_conversion(shots: int, goals: int) -> float:
+    '''
+    Function used to compute a team's shots conversion in the last five
+    matches.
+        Parameters:
+            shots (int): Amount of shots the team has taken.
+            goals (int): Amount of goals the team has scored.
+
+        Returns:
+            float: The shots conversion in the team's previous five matches.
+    '''
+    if shots == 0:
+        return 0.0
+    return goals / shots
