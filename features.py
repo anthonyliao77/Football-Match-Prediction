@@ -10,15 +10,14 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
     '''
     Creates a new DataFrame containing pre-match features for
     each fixture based on each team's historical performance.
-
-    Parameters:
-        dataframe (pd.DataFrame): DataFrame containing historical match
+        Parameters:
+            dataframe (pd.DataFrame): DataFrame containing historical match
             data for all teams, which includes match statistics and results.
 
-    Returns:
-        pd.DataFrame: A new DataFrame containing the original match data
-        along with features such as recent form, goals scored,
-        goals conceded and other historical statistics.
+        Returns:
+            pd.DataFrame: A new DataFrame containing the original match data
+            along with features such as recent form, goals scored,
+            goals conceded and other historical statistics.
     '''
 
     team_stats = defaultdict(list)
@@ -112,13 +111,12 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
 def calculate_points(result: str, home: bool) -> int:
     """
     Calculates points earned from a match result.
+        Parameters:
+            result (str): Match result (H, D, A).
+            home (bool): Whether the team played at home.
 
-    Parameters:
-        result (str): Match result (H, D, A).
-        home (bool): Whether the team played at home.
-
-    Returns:
-        int: Points earned.
+        Returns:
+            int: Points earned.
     """
 
     if result == "D":
