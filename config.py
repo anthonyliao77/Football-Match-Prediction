@@ -18,5 +18,11 @@ feature_columns = [
     "AwayGC5",
     # Team goal difference last five matches
     "HomeGD5",
-    "AwayGD5"
+    "AwayGD5",
+    # Team shots on target last five matches
+    "HomeSOT5",
+    "AwaySOT5",
+    # Team shots last five matches
+    "HomeS5",
+    "AwayS5",
 ]
