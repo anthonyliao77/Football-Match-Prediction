@@ -5,6 +5,8 @@ Loads football goal data from understat.
 import pandas as pd
 import soccerdata as sd
 
+from config import TEAM_NAME_MAP
+
 
 def load_understat_data(
     league: str,
@@ -30,13 +32,25 @@ def load_understat_data(
         leagues=league,
         seasons=seasons,
     )
+
     # Load the schedule data from understat
     xg_data = understat.read_schedule()
-    xg_data["date"] = pd.to_datetime(xg_data["date"], dayfirst=True)
-    xg_data = xg_data.sort_values("date").reset_index(drop=True)
+
     # Normalize the date column to remove time information
     xg_data["date"] = pd.to_datetime(
         xg_data["date"]
     ).dt.normalize()
+    xg_data = xg_data.sort_values("date")
+
+    # Converting team names to match the football-data dataset
+    xg_data["home_team"] = xg_data["home_team"].replace(TEAM_NAME_MAP)
+    xg_data["away_team"] = xg_data["away_team"].replace(TEAM_NAME_MAP)
+
+    # Converting team names to strings
+    xg_data["home_team"] = xg_data["home_team"].astype(str)
+    xg_data["away_team"] = xg_data["away_team"].astype(str)
+
+    # Sort matches by date
+    xg_data = xg_data.sort_values("date").reset_index(drop=True)
 
     return xg_data
