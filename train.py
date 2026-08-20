@@ -18,6 +18,7 @@ from config import (
     VALIDATION_START_DATE,
 )
 from data_loader import load_data
+from elo import create_elo_features
 from features import create_features
 from understat_loader import load_understat_data
 
@@ -51,6 +52,7 @@ dataframe = pd.merge_asof(
 
 # Create features for the model using the combined match data
 dataframe = create_features(dataframe=dataframe)
+dataframe = create_elo_features(dataframe=dataframe)
 
 # Split the data into training and validation sets based on date ranges
 train_data = dataframe[dataframe["Date"] <= TRAIN_END_DATE]

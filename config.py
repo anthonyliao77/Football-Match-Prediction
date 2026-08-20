@@ -76,4 +76,7 @@ FEATURE_COLUMNS = [
     # Team xGA last five matches
     "HomeXGA5",
     "AwayXGA5",
+    # Team ELO rating before the match
+    "HomeEloBefore",
+    "AwayEloBefore",
 ]
