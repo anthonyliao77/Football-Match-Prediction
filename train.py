@@ -22,7 +22,7 @@ from features import create_features
 from understat_loader import load_understat_data
 
 # Choosen league to train and evaluate the model on
-LEAGUE = "LaLiga"
+LEAGUE = "PremierLeague"
 LEAGUE_CONFIG = LEAGUES[LEAGUE]
 
 # Load and combine match data for the specified league
@@ -111,6 +111,7 @@ print(confusion_matrix(val_y, prediction))
 xgb = XGBClassifier(
     n_estimators=200,
     random_state=67,
+    learning_rate=0.01,
     n_jobs=-1
 )
 
