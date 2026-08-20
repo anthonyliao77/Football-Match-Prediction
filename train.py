@@ -4,7 +4,11 @@ Trains, validates and evaluates the prediction model.
 
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import (
+    accuracy_score,
+    # confusion_matrix,
+    log_loss,
+)
 from sklearn.preprocessing import LabelEncoder
 
 # pyrefly: ignore [missing-import]
@@ -23,7 +27,9 @@ from features import create_features
 from understat_loader import load_understat_data
 
 # Choosen league to train and evaluate the model on
+# LEAGUE = "SerieA"
 LEAGUE = "PremierLeague"
+# LEAGUE = "LaLiga"
 LEAGUE_CONFIG = LEAGUES[LEAGUE]
 
 # Load and combine match data for the specified league
@@ -74,6 +80,7 @@ val_y = validation_data["FTR"]
 label_encoder = LabelEncoder()
 
 train_y_encoded = label_encoder.fit_transform(train_y)
+val_y_encoded = label_encoder.transform(val_y)
 
 
 # Random Forest model
@@ -91,6 +98,7 @@ random_forest.fit(train_X, train_y)
 
 # Random Forest prediction
 prediction = random_forest.predict(val_X)
+rf_probabilities = random_forest.predict_proba(val_X)
 
 rf_results = validation_data[
     ["Date", "HomeTeam", "AwayTeam", "FTR"]
@@ -98,15 +106,57 @@ rf_results = validation_data[
 
 rf_results["Prediction"] = prediction
 
-print(rf_results.head(10))
+# Add predicted probabilities to the results DataFrame
+rf_results["AwayProbability"] = rf_probabilities[:, 0]
+rf_results["DrawProbability"] = rf_probabilities[:, 1]
+rf_results["HomeProbability"] = rf_probabilities[:, 2]
 
-# Random Forest accuracy
-accuracy = accuracy_score(val_y, prediction)
-print("Random Forest accuracy:", accuracy)
+# # Random Forest accuracy
+rf_accuracy = accuracy_score(val_y, prediction)
 
-# Random Forest confusion matrix
-print(random_forest.classes_)
-print(confusion_matrix(val_y, prediction))
+# Log loss
+rf_log_loss = log_loss(
+    val_y,
+    rf_probabilities,
+    labels=random_forest.classes_
+)
+
+# Multiclass Brier score
+one_hot_y = pd.get_dummies(
+    val_y
+).reindex(
+    columns=random_forest.classes_,
+    fill_value=0
+)
+
+rf_brier_score = (
+    (rf_probabilities - one_hot_y.to_numpy()) ** 2
+).sum(axis=1).mean()
+
+print(
+    rf_results[
+        [
+            "Date",
+            "HomeTeam",
+            "AwayTeam",
+            "FTR",
+            "Prediction",
+            "HomeProbability",
+            "DrawProbability",
+            "AwayProbability",
+        ]
+    ].head(10)
+)
+print(
+    "Random Forest accuracy:", rf_accuracy,
+    "Log loss:", rf_log_loss,
+    "Brier score:", rf_brier_score,
+    "\n"
+)
+
+# # Random Forest confusion matrix
+# print(random_forest.classes_)
+# print(confusion_matrix(val_y, prediction))
 
 
 # XGBoost model
@@ -121,6 +171,7 @@ xgb.fit(train_X, train_y_encoded)
 
 # XGBoost prediction
 xgb_prediction_encoded = xgb.predict(val_X)
+xgb_probabilities = xgb.predict_proba(val_X)
 
 # Convert predictions back to A/D/H
 xgb_prediction = label_encoder.inverse_transform(
@@ -134,43 +185,87 @@ xgb_results = validation_data[
 
 xgb_results["Prediction"] = xgb_prediction
 
-print(xgb_results.head(10))
+# Add probabilities
+xgb_results["AwayProbability"] = xgb_probabilities[:, 0]
+xgb_results["DrawProbability"] = xgb_probabilities[:, 1]
+xgb_results["HomeProbability"] = xgb_probabilities[:, 2]
 
 # XGBoost accuracy
-xgb_accuracy = accuracy_score(val_y, xgb_prediction)
-
-print("XGBoost accuracy:", xgb_accuracy)
-
-# XGBoost confusion matrix
-print(label_encoder.classes_)
-print(
-    confusion_matrix(
-        val_y,
-        xgb_prediction,
-        labels=label_encoder.classes_
-    )
+xgb_accuracy = accuracy_score(
+    val_y,
+    xgb_prediction
 )
 
+# Log loss
+xgb_log_loss = log_loss(
+    val_y_encoded,
+    xgb_probabilities
+)
 
-# Match distribution of validation data
-print(validation_data["FTR"].value_counts(normalize=True))
+# Multiclass Brier score
+one_hot_y = pd.get_dummies(
+    val_y_encoded
+).reindex(
+    columns=range(xgb_probabilities.shape[1]),
+    fill_value=0
+)
+
+xgb_brier_score = (
+    (xgb_probabilities - one_hot_y.to_numpy()) ** 2
+).sum(axis=1).mean()
+
+# Print results
+print(
+    xgb_results[
+        [
+            "Date",
+            "HomeTeam",
+            "AwayTeam",
+            "FTR",
+            "Prediction",
+            "HomeProbability",
+            "DrawProbability",
+            "AwayProbability",
+        ]
+    ].head(10)
+)
+
+print(
+    "XGBoost accuracy:", xgb_accuracy,
+    "Log loss:", xgb_log_loss,
+    "Brier score:", xgb_brier_score
+)
+
+# # XGBoost confusion matrix
+# print(label_encoder.classes_)
+# print(
+#     confusion_matrix(
+#         val_y,
+#         xgb_prediction,
+#         labels=label_encoder.classes_
+#     )
+# )
 
 
-# Random Forest feature importance
-rf_importance = pd.Series(
-    random_forest.feature_importances_,
-    index=train_X.columns
-).sort_values(ascending=False)
-
-print("Random Forest feature importance:")
-print(rf_importance)
+# # Match distribution of validation data
+# print(validation_data["FTR"].value_counts(normalize=True))
 
 
-# XGBoost feature importance
-xgb_importance = pd.Series(
-    xgb.feature_importances_,
-    index=train_X.columns
-).sort_values(ascending=False)
+# # Random Forest feature importance
+# rf_importance = pd.Series(
+#     random_forest.feature_importances_,
+#     index=train_X.columns
+# ).sort_values(ascending=False)
 
-print("XGBoost feature importance:")
-print(xgb_importance)
+# print("Random Forest feature importance:")
+# print(rf_importance)
+
+
+# # XGBoost feature importance
+# xgb_importance = pd.Series(
+#     xgb.feature_importances_,
+#     index=train_X.columns
+# ).sort_values(ascending=False)
+
+# print("XGBoost feature importance:")
+# print(xgb_importance)
