@@ -28,8 +28,8 @@ from understat_loader import load_understat_data
 
 # Choosen league to train and evaluate the model on
 # LEAGUE = "SerieA"
-LEAGUE = "PremierLeague"
-# LEAGUE = "LaLiga"
+# LEAGUE = "PremierLeague"
+LEAGUE = "LaLiga"
 LEAGUE_CONFIG = LEAGUES[LEAGUE]
 
 # Load and combine match data for the specified league
@@ -154,10 +154,6 @@ print(
     "\n"
 )
 
-# # Random Forest confusion matrix
-# print(random_forest.classes_)
-# print(confusion_matrix(val_y, prediction))
-
 
 # XGBoost model
 xgb = XGBClassifier(
@@ -236,6 +232,11 @@ print(
     "Brier score:", xgb_brier_score
 )
 
+
+# # Random Forest confusion matrix
+# print(random_forest.classes_)
+# print(confusion_matrix(val_y, prediction))
+
 # # XGBoost confusion matrix
 # print(label_encoder.classes_)
 # print(
@@ -257,9 +258,7 @@ print(
 #     index=train_X.columns
 # ).sort_values(ascending=False)
 
-# print("Random Forest feature importance:")
-# print(rf_importance)
-
+# print("Random Forest feature importance:", rf_importance)
 
 # # XGBoost feature importance
 # xgb_importance = pd.Series(
@@ -267,5 +266,4 @@ print(
 #     index=train_X.columns
 # ).sort_values(ascending=False)
 
-# print("XGBoost feature importance:")
-# print(xgb_importance)
+# print("XGBoost feature importance:", xgb_importance)
