@@ -8,7 +8,7 @@ import pandas as pd
 
 
 def load_data(league: str) -> pd.DataFrame:
-    '''
+    """
     Loads and combines football match data from dataset.
 
     Parameters:
@@ -16,7 +16,7 @@ def load_data(league: str) -> pd.DataFrame:
     Returns:
         pd.DataFrame: A DataFrame containing the raw combined match data for
         the specified league.
-    '''
+    """
     files_path = glob.glob(f"{league}/*.csv")
 
     # Read all CSV files

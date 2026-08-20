@@ -7,18 +7,19 @@ import pandas as pd
 
 
 def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
-    '''
+    """
     Creates a new DataFrame containing pre-match features for
     each fixture based on each team's historical performance.
-        Parameters:
-            dataframe (pd.DataFrame): DataFrame containing historical match
-            data for all teams, which includes match statistics and results.
 
-        Returns:
-            pd.DataFrame: A new DataFrame containing the original match data
-            along with features such as recent form, goals scored,
-            goals conceded and other historical statistics.
-    '''
+    Parameters:
+        dataframe (pd.DataFrame): DataFrame containing historical match
+        data for all teams, which includes match statistics and results.
+
+    Returns:
+        pd.DataFrame: A new DataFrame containing the original match data
+        along with features such as recent form, goals scored,
+        goals conceded and other historical statistics.
+    """
 
     team_stats = defaultdict(list)
     features = []
@@ -125,12 +126,13 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
 def calculate_points(result: str, home: bool) -> int:
     """
     Calculates points earned from a match result.
-        Parameters:
-            result (str): Match result (H, D, A).
-            home (bool): Whether the team played at home.
 
-        Returns:
-            int: Points earned.
+    Parameters:
+        result (str): Match result (H, D, A).
+        home (bool): Whether the team played at home.
+
+    Returns:
+        int: Points earned.
     """
 
     if result == "D":
@@ -146,104 +148,112 @@ def calculate_points(result: str, home: bool) -> int:
 
 
 def last5_points(team_points: list) -> int:
-    '''
+    """
     Function used to compute a team's perfomance in last five matches.
-        Parameters:
-            team_stats (list): List of team's historical data.
 
-        Returns:
-            int: Total points earned in the team's previous five matches.
-    '''
+    Parameters:
+        team_stats (list): List of team's historical data.
+
+    Returns:
+        int: Total points earned in the team's previous five matches.
+    """
 
     return sum(match["points"] for match in team_points)
 
 
 def last5_goal_scored(team_goals: list) -> int:
-    '''
+    """
     Function used to compute a team's goal scored in the last five matches.
-        Parameters:
-            team_goals (list): List of team's historical data.
+    
+    Parameters:
+        team_goals (list): List of team's historical data.
 
-        Returns:
-            int: The total goals scored in the team's previous five matches.
-    '''
+    Returns:
+        int: The total goals scored in the team's previous five matches.
+    """
     return sum(match["goals_scored"] for match in team_goals)
 
 
 def last5_goal_conceded(team_conceded: list) -> int:
-    '''
+    """
     Function used to compute the amount of goals the team has conceded
     in the last five matches.
-        Parameters:
-            team_conceded (list): List of team's historical data.
 
-        Returns:
-            int: The total goals conceded in the team's previous five matches.
-    '''
+    Parameters:
+        team_conceded (list): List of team's historical data.
+
+    Returns:
+        int: The total goals conceded in the team's previous five matches.
+    """
     return sum(match["goals_conceded"] for match in team_conceded)
 
 
 def last5_goal_difference(goal_scored: int, goal_conceded: int) -> int:
-    '''
+    """
     Function used to compute a team's goal difference in the last five matches.
-        Parameters:
-            goals_scored (int): Amount of goals the team has scored.
-            goals_conceded (int): Amount of goals the team has conceded. 
 
-        Returns:
-            int: The goal difference in the team's previous five matches.
-    '''
+    Parameters:
+        goals_scored (int): Amount of goals the team has scored.
+        goals_conceded (int): Amount of goals the team has conceded. 
+
+    Returns:
+        int: The goal difference in the team's previous five matches.
+    """
     return goal_scored - goal_conceded
 
 
 def last5_shots_on_target(team_shots_on_target: list) -> int:
-    '''
+    """
     Function used to compute a team's shots on target in the last five matches.
-        Parameters:
-            team_shots_on_target (list): List of team's historical data.
 
-        Returns:
-            int: The total shots on target in the team's previous five matches.
-    '''
+    Parameters:
+        team_shots_on_target (list): List of team's historical data.
+
+    Returns:
+        int: The total shots on target in the team's previous five matches.
+    """
     return sum(match["shots_on_target"] for match in team_shots_on_target)
 
 
 def last5_shots(team_shots: list) -> int:
-    '''
+    """
     Function used to compute a team's shots in the last five matches.
-        Parameters:
-            team_shots (list): List of team's historical data.
+    
+    Parameters:
+        team_shots (list): List of team's historical data.
 
-        Returns:
-            int: The total shots in the team's previous five matches.
-    '''
+    Returns:
+        int: The total shots in the team's previous five matches.
+    """
     return sum(match["shots"] for match in team_shots)
 
 
 def last5_shots_conversion(shots: int, goals: int) -> float:
-    '''
+    """
     Function used to compute a team's shots conversion in the last five
     matches.
-        Parameters:
-            shots (int): Amount of shots the team has taken.
-            goals (int): Amount of goals the team has scored.
 
-        Returns:
-            float: The shots conversion in the team's previous five matches.
-    '''
+    Parameters:
+        shots (int): Amount of shots the team has taken.
+        goals (int): Amount of goals the team has scored.
+
+    Returns:
+        float: The shots conversion in the team's previous five matches.
+    """
     if shots == 0:
         return 0.0
     return goals / shots
 
 
 def last5_xg(team_xg: list) -> float:
-    '''
+    """
     Function used to compute a team's expected goals in the last five matches.
-        Parameters:
-            team_xg (list): List of team's historical data.
 
-        Returns:
-            float: The total expected goals in the team's
-            previous five matches.
-    '''
+    Parameters:
+        team_xg (list): List of team's historical data.
+
+    Returns:
+        float: The total expected goals in the team's
+        previous five matches.
+    """
     return sum(match["xG"] for match in team_xg)
