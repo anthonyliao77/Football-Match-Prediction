@@ -6,6 +6,8 @@ import glob
 
 import pandas as pd
 
+from src.elo import get_season
+
 
 def load_data(league: str) -> pd.DataFrame:
     """
@@ -42,3 +44,39 @@ def load_data(league: str) -> pd.DataFrame:
     dataframe = dataframe.sort_values("Date").reset_index(drop=True)
 
     return dataframe
+
+
+def split_by_season(
+    dataframe: pd.DataFrame,
+    validation_seasons: int = 1
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Splits match data chronologically by football season.
+
+    Parameters:
+        dataframe: DataFrame containing match data.
+        validation_seasons: Number of complete seasons used for validation.
+
+    Returns:
+        Tuple containing training and validation DataFrames.
+    """
+    dataframe = dataframe.sort_values("Date").reset_index(drop=True)
+
+    dataframe["Season"] = dataframe["Date"].apply(get_season)
+
+    seasons = dataframe["Season"].unique()
+
+    split_index = len(seasons) - validation_seasons
+
+    training_seasons = seasons[:split_index]
+    validation_seasons_list = seasons[split_index:]
+
+    train_data = dataframe[
+        dataframe["Season"].isin(training_seasons)
+    ].copy()
+
+    validation_data = dataframe[
+        dataframe["Season"].isin(validation_seasons_list)
+    ].copy()
+
+    return train_data, validation_data
