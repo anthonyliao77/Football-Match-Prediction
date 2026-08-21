@@ -164,7 +164,7 @@ def last5_points(team_points: list) -> int:
 def last5_goal_scored(team_goals: list) -> int:
     """
     Function used to compute a team's goal scored in the last five matches.
-    
+
     Parameters:
         team_goals (list): List of team's historical data.
 
@@ -194,7 +194,7 @@ def last5_goal_difference(goal_scored: int, goal_conceded: int) -> int:
 
     Parameters:
         goals_scored (int): Amount of goals the team has scored.
-        goals_conceded (int): Amount of goals the team has conceded. 
+        goals_conceded (int): Amount of goals the team has conceded.
 
     Returns:
         int: The goal difference in the team's previous five matches.
@@ -218,7 +218,7 @@ def last5_shots_on_target(team_shots_on_target: list) -> int:
 def last5_shots(team_shots: list) -> int:
     """
     Function used to compute a team's shots in the last five matches.
-    
+
     Parameters:
         team_shots (list): List of team's historical data.
 
