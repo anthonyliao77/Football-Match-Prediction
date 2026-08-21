@@ -295,9 +295,9 @@ These parameters are configurable and can be tested experimentally.
 
 The expected result is calculated using the standard Elo logistic formula:
 
-[
-E = \frac{1}{1 + 10^{(R_{opp}-R_{team})/400}}
-]
+$$
+E = \frac{1}{1 + 10^{(R_{\text{opp}} - R_{\text{team}})/400}}
+$$
 
 For a home fixture, the home team's rating receives the configured home-advantage adjustment before calculating the expected score.
 
@@ -305,9 +305,9 @@ For a home fixture, the home team's rating receives the configured home-advantag
 
 After the match result is known, the rating is updated using:
 
-[
+$$
 R' = R + K(S-E)
-]
+$$
 
 where:
 
@@ -329,12 +329,12 @@ Loss → 0
 
 At the beginning of a new season, ratings are partially regressed toward the initial rating:
 
-[
-R_{new} =
-A \times R_{old}
+$$
+R_{\text{new}} =
+A \times R_{\text{old}}
 +
-(1-A) \times R_{initial}
-]
+(1-A) \times R_{\text{initial}}
+$$
 
 This allows previous-season strength to carry over while reducing the influence of outdated ratings.
 
@@ -429,11 +429,11 @@ The project evaluates both the predicted class and the quality of the predicted 
 
 Accuracy measures the percentage of validation matches where the predicted outcome is correct.
 
-[
+$$
 Accuracy =
 \frac{\text{Correct Predictions}}
 {\text{Total Predictions}}
-]
+$$
 
 Higher is better.
 
