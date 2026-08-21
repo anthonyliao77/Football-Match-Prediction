@@ -4,15 +4,15 @@ Stores feature definitions for the evaluation model.
 
 LEAGUES = {
     "PremierLeague": {
-        "football_data": "Football-data/PremierLeague",
+        "football_data": "football_data/PremierLeague",
         "understat": "ENG-Premier League",
     },
     "LaLiga": {
-        "football_data": "Football-data/LaLiga",
+        "football_data": "football_data/LaLiga",
         "understat": "ESP-La Liga",
     },
     "SerieA": {
-        "football_data": "Football-data/SerieA",
+        "football_data": "football_data/SerieA",
         "understat": "ITA-Serie A",
     },
 }
