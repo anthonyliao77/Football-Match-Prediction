@@ -44,10 +44,6 @@ TEAM_NAME_MAP = {
     "Rayo Vallecano": "Vallecano",
 }
 
-TRAIN_END_DATE = "2025-05-31"
-VALIDATION_START_DATE = "2025-08-15"
-VALIDATION_END_DATE = "2026-06-01"
-
 FEATURE_COLUMNS = [
     # Team points last five matches
     "HomePT5",
