@@ -17,11 +17,8 @@ from xgboost import XGBClassifier
 from config import (
     FEATURE_COLUMNS,
     LEAGUES,
-    TRAIN_END_DATE,
-    VALIDATION_END_DATE,
-    VALIDATION_START_DATE,
 )
-from src.data_loader import load_data
+from src.data_loader import load_data, split_by_season
 from src.elo import create_elo_features
 from src.features import create_features
 from src.understat_loader import load_understat_data
@@ -77,11 +74,10 @@ def train_model(league):
     dataframe = create_elo_features(dataframe=dataframe)
 
     # Split the data into training and validation sets based on date ranges
-    train_data = dataframe[dataframe["Date"] <= TRAIN_END_DATE]
-    validation_data = dataframe[
-        (dataframe["Date"] >= VALIDATION_START_DATE)
-        & (dataframe["Date"] <= VALIDATION_END_DATE)
-    ]
+    train_data, validation_data = split_by_season(
+        dataframe,
+        validation_seasons=1
+    )
 
     # training data
     train_X = train_data[FEATURE_COLUMNS]
