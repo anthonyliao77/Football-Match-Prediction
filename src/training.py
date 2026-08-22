@@ -205,7 +205,8 @@ def train_model(league):
     # Log loss
     xgb_log_loss = log_loss(
         val_y_encoded,
-        xgb_probabilities
+        xgb_probabilities,
+        labels=range(len(label_encoder.classes_))
     )
 
     # Multiclass Brier score
