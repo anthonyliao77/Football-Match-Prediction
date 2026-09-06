@@ -4,7 +4,7 @@ This module receives data from the API-Football API.
 
 import os
 
-# from pathlib import Path
+from pathlib import Path
 import pandas as pd
 
 # import requests
@@ -76,3 +76,23 @@ def update_csv_file(league: str, season: str, new_data: pd.DataFrame) -> None:
         season (str): The season year (e.g., "2023").
         new_data (pd.DataFrame): A DataFrame containing new fixture data.
     """
+    csv_path = Path(f"football_data/{league}/{season}.csv")
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if csv_path.exists():
+        existing_data = pd.read_csv(csv_path)
+
+        combined_data = pd.concat(
+            [existing_data, new_data],
+            ignore_index=True
+        )
+
+        combined_data = combined_data.drop_duplicates(
+            subset="FixtureID",
+            keep="last"
+        )
+    else:
+        combined_data = new_data
+
+    combined_data.to_csv(csv_path, index=False)
