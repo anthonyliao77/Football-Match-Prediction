@@ -64,7 +64,7 @@ network call. The runtime pipeline is:
 Historical Match Data (CSV, xG already merged in by backfill_xg.py)
         │
         ▼
-  Estimate Missing xG  ──── from shots, in memory, never written back
+  Report xG Coverage  ──── rows with measured xG, before any features
         │
         ▼
   Feature Engineering
