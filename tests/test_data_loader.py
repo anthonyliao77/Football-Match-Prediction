@@ -249,3 +249,98 @@ def test_split_by_season_preserves_match_data():
 
     assert validation_data.iloc[0]["HomeTeam"] == "Team B"
     assert validation_data.iloc[0]["FTHG"] == 1
+
+
+def test_write_csv_atomic_writes_the_frame(tmp_path):
+    """Test that the frame is written with a header and no index."""
+    path = tmp_path / "2025-2026.csv"
+    frame = pd.DataFrame({"Date": ["01/09/2025"], "HomeTeam": ["Arsenal"]})
+
+    data_loader.write_csv_atomic(path, frame)
+
+    assert path.read_text(encoding="utf-8") == "Date,HomeTeam\n01/09/2025,Arsenal\n"
+
+
+def test_write_csv_atomic_keeps_a_byte_order_mark(tmp_path):
+    """Test that a file written with a BOM is rewritten with one.
+
+    The season CSVs from football-data.co.uk carry a UTF-8 BOM, and dropping it
+    would make Excel misread the file as Latin-1.
+    """
+    path = tmp_path / "2025-2026.csv"
+    frame = pd.DataFrame({"HomeTeam": ["Atl\u00e9tico Madrid"]})
+
+    data_loader.write_csv_atomic(path, frame, encoding="utf-8-sig")
+    data_loader.write_csv_atomic(
+        path,
+        pd.DataFrame({"HomeTeam": ["Real Madrid"]}),
+    )
+
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert "Real Madrid" in path.read_text(encoding="utf-8-sig")
+
+
+def test_write_csv_atomic_keeps_windows_line_endings(tmp_path):
+    """Test that a CRLF file is not silently rewritten with LF endings."""
+    path = tmp_path / "2025-2026.csv"
+    frame = pd.DataFrame({"HomeTeam": ["Arsenal", "Chelsea"]})
+
+    data_loader.write_csv_atomic(path, frame, line_terminator="\r\n")
+    data_loader.write_csv_atomic(
+        path,
+        pd.DataFrame({"HomeTeam": ["Arsenal", "Chelsea", "Everton"]}),
+    )
+
+    raw = path.read_bytes()
+
+    assert b"\r\n" in raw
+    assert b"\n" not in raw.replace(b"\r\n", b"")
+
+
+def test_write_csv_atomic_defaults_to_unix_endings_for_a_new_file(tmp_path):
+    """Test that a season being created is not given Windows line endings."""
+    path = tmp_path / "new.csv"
+
+    data_loader.write_csv_atomic(path, pd.DataFrame({"HomeTeam": ["Arsenal"]}))
+
+    assert b"\r\n" not in path.read_bytes()
+    assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_write_csv_atomic_creates_missing_directories(tmp_path):
+    """Test that the destination directory is created if it is absent."""
+    path = tmp_path / "new" / "league" / "2025-2026.csv"
+
+    data_loader.write_csv_atomic(path, pd.DataFrame({"HomeTeam": ["Arsenal"]}))
+
+    assert path.exists()
+
+
+def test_write_csv_atomic_leaves_no_temporary_file(tmp_path):
+    """Test that the temporary file is moved rather than left behind."""
+    path = tmp_path / "2025-2026.csv"
+
+    data_loader.write_csv_atomic(path, pd.DataFrame({"HomeTeam": ["Arsenal"]}))
+
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_csv_atomic_keeps_the_original_file_if_the_write_fails(
+    tmp_path, monkeypatch
+):
+    """Test that a failure cannot truncate the existing season data."""
+    path = tmp_path / "2025-2026.csv"
+    original = "Date,HomeTeam\r\n01/09/2025,Arsenal\r\n"
+    path.write_bytes(original.encode("utf-8-sig"))
+
+    def explode(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(data_loader.os, "replace", explode)
+
+    with pytest.raises(OSError, match="disk full"):
+        data_loader.write_csv_atomic(
+            path, pd.DataFrame({"Date": ["02/09/2025"]})
+        )
+
+    assert path.read_bytes() == original.encode("utf-8-sig")
