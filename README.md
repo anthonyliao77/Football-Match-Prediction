@@ -12,16 +12,15 @@ A football match prediction project using historical match statistics, rolling t
 
 The project follows a chronological football prediction pipeline:
 
-1. Historical match data is loaded from local CSV files.
-2. Understat schedule data is obtained through `soccerdata`.
-3. The datasets are aligned by date and team names.
-4. Historical rolling team statistics are calculated using previous matches.
-5. Understat xG and xGA information is incorporated into rolling features.
-6. Elo ratings are calculated sequentially so that each fixture receives the ratings available **before that match**.
-7. Data is split chronologically by football season rather than randomly.
-8. Random Forest and XGBoost classifiers are trained on historical seasons.
-9. The models are evaluated on the latest held-out season.
-10. Predictions include both the predicted outcome and probabilities for Home, Draw, and Away.
+1. Historical match data is loaded from local CSV files, which already carry the Understat xG merged in.
+2. The xG coverage is reported, and any season Understat has not published yet is called out before the models are trained.
+3. Historical rolling team statistics are calculated using previous matches.
+4. xG and xGA information is incorporated into rolling features.
+5. Elo ratings are calculated sequentially so that each fixture receives the ratings available **before that match**.
+6. Data is split chronologically by football season rather than randomly.
+7. Random Forest and XGBoost classifiers are trained on historical seasons.
+8. The models are evaluated on the latest held-out season.
+9. Predictions include both the predicted outcome and probabilities for Home, Draw, and Away.
 
 ## Current Status
 
@@ -57,23 +56,19 @@ The project follows a chronological football prediction pipeline:
 
 ## Data Pipeline
 
-The overall pipeline is:
+Understat xG is written into the season CSVs ahead of time by
+`backfill_xg.py`, so a training run reads one file per season and makes no
+network call. The runtime pipeline is:
 
 ```text
-Historical Match Data
+Historical Match Data (CSV, xG already merged in by backfill_xg.py)
         │
-        ├───────────────┐
-        │               │
-        ▼               ▼
-Football-Data       Understat
-        │               │
-        └───────┬───────┘
-                ▼
-       Data Alignment
-                │
-                ▼
-        Feature Engineering
-                │
+        ▼
+  Estimate Missing xG  ──── from shots, in memory, never written back
+        │
+        ▼
+  Feature Engineering
+        │
         ┌───────┴────────┐
         ▼                ▼
    Rolling Form        Elo
@@ -81,7 +76,7 @@ Football-Data       Understat
         └───────┬────────┘
                 ▼
        Season-Based Split
-                │
+        │
         ┌───────┴────────┐
         ▼                ▼
      Training        Validation
@@ -94,7 +89,14 @@ Football-Data       Understat
        Outcome + Probabilities
 ```
 
+The offline half of that, which is a separate command:
+
+```text
+Football-Data CSVs  +  Understat  ──►  backfill_xg.py  ──►  CSVs with xG
+```
+
 ---
+
 
 ## Features
 
@@ -120,7 +122,7 @@ For example, if predicting a match on Saturday, the rolling features represent i
 
 ### Expected Goals
 
-Historical expected-goals data is obtained from Understat through the `soccerdata` package.
+Historical expected-goals data is obtained from Understat by `src/understat_client.py`, which reads the JSON endpoint the Understat website itself calls. See [Understat](#understat).
 
 The project uses:
 
@@ -174,24 +176,105 @@ The data provides information such as:
 
 The data is loaded, combined, normalized, and sorted chronologically before feature engineering.
 
-No API key is required for these local files.
+No API key is required for these local files. They can optionally be augmented with API-Football fixtures, which does require a key (see [Updating Match Data](#updating-match-data)).
 
 ### Understat
 
 Understat provides historical expected-goals information.
 
-The project accesses Understat through the [`soccerdata`](https://github.com/amosbastian/soccerdata) Python package.
+There is no public Understat API, so `src/understat_client.py` reads the same
+JSON endpoint the website itself calls:
 
-The Understat data is used to obtain:
+```text
+https://understat.com/getLeagueData/{league}/{start_year}
+```
 
-* Match dates
-* Home and away teams
-* Home expected goals
-* Away expected goals
+where `{league}` is one of `EPL`, `La_liga` and `Serie_A`, and `{start_year}` is
+the first year of the season, so 2026/2027 is requested as `2026`. The response
+lists every fixture of that season with both xG values, which are then matched
+against the local CSVs.
 
-Team names are mapped to the naming convention used by the local football-data files before merging.
+Two details are load-bearing:
 
-No API key is currently used by this project for Understat.
+* **The endpoint needs a session.** It answers 404 until the client has first
+  visited the site and holds its cookies, so the client fetches the homepage
+  once before the first request. A 404 caused by a missing cookie is
+  indistinguishable from a season that does not exist, which is a very
+  confusing way to lose a season.
+* **One request per season.** The endpoint can also be asked for several
+  seasons at once, but it is answered as a unit: if the newest season is not
+  published, the whole response comes back short and the missing data is only
+  visible by counting rows. Requesting each season separately means an
+  unpublished season costs exactly that season.
+
+Only fixtures the site marks as played are kept. A fixture that has not been
+played carries `xG: {h: null, a: null}`, and a season with no played matches at
+all is reported as unavailable rather than returned as an empty frame.
+
+Requests are sequential with a small delay and there is no cache. That is
+deliberate: a cached in-progress season would go stale and silently, which is
+the one failure mode that would be hardest to notice.
+
+#### Storing xG in the CSVs
+
+Understat xG is written into the season CSVs once, by `backfill_xg.py`:
+
+```bash
+python backfill_xg.py --dry-run          # report what would change
+python backfill_xg.py --league LaLiga    # write one league
+```
+
+Three columns are appended to each season file: `home_xg`, `away_xg` and
+`xg_source`. The backfill only ever fills a **gap**. A value already in the file
+is left exactly as it is, and `xg_source` names where the values came from
+(`understat`). Rerunning it writes nothing.
+
+The point of storing this is that the CSVs stay the single source of truth: a
+season that Understat published is readable without a network call, and the
+training run does not depend on Understat being reachable or on it still
+listing an old season.
+
+Matches are matched on **exact date plus both teams**, so a fixture that was
+rescheduled keeps its gap until the two sources agree on the date. A handful of
+rows are in that state permanently because a match was postponed and replayed
+on a different day.
+
+#### When a season has no xG yet
+
+Understat publishes a season's xG only once matches have been played, and it
+can lag the fixture list, so the newest rows of a league that is still being
+played can carry no xG at all. Nothing is filled in for them: filling with
+**0** would be actively harmful, because a zero says "this team created no
+chances", and the four rolling xG features would then read zero for every row
+of the validation set.
+
+Instead the training run says so, before it builds any features:
+
+```text
+xG coverage: 2320 of 2320 rows carry measured xG
+```
+
+and when the season being validated on is not fully covered:
+
+```text
+**************************************************************************
+WARNING: 12 of 12 rows in 2026/2027 have no measured xG.
+Understat has not published that season, so HomeXG5, AwayXG5,
+HomeXGA5 and AwayXGA5 will read 0 for every row of the validation
+set. The scores below are therefore pessimistic, and the cause will
+not be visible in the metrics themselves.
+Try: python backfill_xg.py --league PremierLeague
+************************************************************************
+```
+
+The check is per season and only the newest one is checked, because that is the
+season the reported scores are computed on. Gaps in older seasons are counted
+in the coverage line but do not warn: they cannot affect the current scores.
+
+The message says *pessimistic* rather than *optimistic* because the model sees
+no xG evidence for the teams it is predicting, and falls back on the rest of
+its features. It is guessing with less information, and the error is in the
+direction of the missing signal.
 
 ---
 
@@ -219,9 +302,21 @@ This makes the team-name mapping and date normalization important for successful
 
 ### Missing Data
 
-The current pipeline does not implement a general-purpose missing-value imputation system.
+There is no general-purpose imputation system, and none is needed for the
+football-data columns, which are complete for the seasons in use.
 
-The project currently expects the supported source data to contain sufficient information for the selected seasons.
+xG is the one exception and is handled deliberately rather than generically: a
+value Understat has published is used as is, and a value it has not is left
+missing. See [When a season has no xG yet](#when-a-season-has-no-xg-yet).
+
+Two rules keep this honest:
+
+* A missing xG is never filled in, because the only automatic fillers
+  available (zero, or something regressed from shot counts) both put invented
+  numbers into features whose whole purpose is to be measured.
+* Every training run prints how many rows carry measured xG, and warns by name
+  if the season being validated on is among the gaps, so the proportion is
+  never a silent assumption.
 
 ---
 
@@ -498,6 +593,12 @@ When benchmark experiments are formally recorded, results can be presented in a 
 
 The results are intentionally not hardcoded into this README because they can change as features, Elo parameters, and model configurations are tested.
 
+> **Read the validation numbers in proportion.** The held-out season is 40
+> matches for the Premier League and SerieA and 59 for LaLiga, so the scores
+> move around between runs for reasons that have nothing to do with the model.
+> A change in log loss of a few hundredths in those leagues is noise, not a
+> finding.
+
 ---
 
 ## Prediction Output
@@ -537,12 +638,14 @@ The current project predicts **match outcomes**, not final scorelines.
 Football-Prediction-Model/
 ├── config.py
 ├── train.py
+├── update_data.py
 ├── requirements.txt
 ├── football_data/
 │   ├── LaLiga/
 │   ├── PremierLeague/
 │   └── SerieA/
 ├── src/
+│   ├── api_football.py
 │   ├── data_loader.py
 │   ├── elo.py
 │   ├── features.py
@@ -557,13 +660,19 @@ Football-Prediction-Model/
 | File                      | Purpose                                                                             |
 | ------------------------- | ----------------------------------------------------------------------------------- |
 | `config.py`               | Configuration, league settings, team-name mappings, and model feature configuration |
-| `train.py`                | Main command-line entry point                                                       |
+| `train.py`                | Main command-line entry point for training                                          |
+| `update_data.py`          | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
+| `backfill_xg.py`          | Command-line entry point for writing Understat xG into the season CSVs              |
 | `requirements.txt`        | Lists the Python dependencies and their tested versions                             |
+| `src/api_football.py`     | Fetches API-Football fixtures and merges them into the local CSVs                   |
 | `src/data_loader.py`      | Loads match data and performs season-based splitting                                |
 | `src/elo.py`              | Calculates football seasons and Elo ratings                                         |
 | `src/features.py`         | Creates rolling form and xG/xGA features                                            |
-| `src/understat_loader.py` | Retrieves and prepares Understat data                                               |
+| `src/understat_client.py` | Reads Understat's per-season JSON endpoint                                          |
+| `src/understat_loader.py` | Retrieves and prepares Understat data, one season at a time                          |
+| `src/xg.py`               | Defines the xG columns and the provenance value written with them                    |
 | `src/training.py`         | Handles feature engineering, model training, prediction, and evaluation             |
+| `tests/`                  | Test suite, run with `python -m pytest`                                             |
 | `football_data/`          | Contains local historical football match data                                       |
 | `.gitignore`              | Specifies files and directories that should not be committed to the repository      |
 | `README.md`               | Project documentation, setup instructions, methodology, and limitations             |
@@ -598,6 +707,25 @@ Install the project dependencies:
 pip install -r requirements.txt
 ```
 
+### API-Football Credentials
+
+Training works entirely from the local CSV files and needs no credentials. To
+augment those files with API-Football data, create a `.env` file in the project
+root:
+
+```bash
+API_FOOTBALL_KEY=your_api_key_here
+```
+
+The key is read only when an API request is made, so the project still imports
+and trains normally without it. `.env` is listed in `.gitignore` and must not be
+committed.
+
+Get a key from [api-football.com](https://www.api-football.com/). The free plan
+is enough to try the tooling, but it restricts which seasons can be queried and
+does not allow the `ids` parameter, so match statistics cannot be fetched with
+it. A paid plan removes both limits.
+
 
 ## Usage
 
@@ -614,18 +742,126 @@ python train.py --league LaLiga
 python train.py --league SerieA
 ```
 
+The xG is already stored in the CSVs, so training needs no network access. To
+refresh it from Understat, for example after a weekend of matches:
+
+```bash
+python backfill_xg.py --dry-run    # report what would change first
+python backfill_xg.py
+```
+
 The training pipeline then:
 
-1. Loads the historical league data.
-2. Retrieves the relevant Understat data.
-3. Aligns the datasets.
-4. Creates rolling features.
-5. Calculates sequential Elo ratings.
-6. Splits the data by season.
-7. Trains the Random Forest and XGBoost models.
-8. Generates validation predictions.
-9. Calculates accuracy, log loss, and Brier score.
-10. Outputs prediction probabilities.
+1. Loads the historical league data, including the Understat xG already stored in the CSVs.
+2. Reports how much of the data carries measured xG, and warns if the validation season has gaps.
+3. Creates rolling features.
+4. Calculates sequential Elo ratings.
+5. Splits the data by season.
+6. Trains the Random Forest and XGBoost models.
+7. Generates validation predictions.
+8. Calculates accuracy, log loss, and Brier score.
+9. Outputs prediction probabilities.
+
+No network call is made during training, and no Understat data is merged at
+runtime. Everything xG-related is read from the CSVs and topped up in memory.
+
+---
+
+## Updating Match Data
+
+The CSVs in `football_data/` are the single source of truth for training. They
+come from Football-Data.co.uk and can be augmented with fixtures from
+API-Football using `update_data.py`.
+
+### How the merge behaves
+
+API rows are matched to existing CSV rows on **date, home team and away team**:
+
+* A **matched** row has only its *empty* cells filled in. Existing
+  football-data.co.uk values always win, so scores and the odds and handicap
+  columns are never overwritten.
+* An **unmatched** row is appended, but only if it has a final score.
+* Running the same update twice leaves the file unchanged.
+
+Team names differ between the two sources, so they are translated through
+`API_FOOTBALL_TEAM_MAP` in `config.py`. An API team name that is neither
+identical to the CSV spelling nor listed there is **rejected** with an error,
+because ingesting it would file the club under a second name and split its Elo
+rating and rolling form in two. When a team is promoted or renamed, add the
+mapping before running an update.
+
+`Referee` is written for the Premier League only, which is the only set of
+CSVs that has the column. The value is not read anywhere in the model.
+
+### Commands
+
+Preview a change without writing anything:
+
+```bash
+python update_data.py --league PremierLeague --season 2026 --dry-run
+```
+
+Note that `--dry-run` still makes the API calls, so it does spend quota. It
+suppresses the file write, not the request.
+
+Fetch recently completed fixtures, restricted to a date window to keep the
+request count down:
+
+```bash
+python update_data.py --league PremierLeague --season 2026 \
+    --from 2026-09-19 --to 2026-09-26
+```
+
+Backfill a whole season from the fixture schedule:
+
+```bash
+python update_data.py --league PremierLeague --season 2026 --schedule
+```
+
+### Request cost
+
+A daily window covering a handful of matches costs 1 request for the fixtures
+plus 1 per 20 matches for statistics. A full season with no window costs about
+20. Restricting `--from` and `--to` is the single biggest lever on quota usage.
+
+### Statistics availability
+
+The `/fixtures` endpoint does not return match statistics inline, so shots and
+shots on target are fetched in a second call that passes fixture IDs. Plans
+without access to the `ids` parameter cannot make that call. When it is
+rejected, the update still ingests scores and results, prints a warning, and
+leaves the shots columns untouched.
+
+### What a free API-Football key can and cannot do
+
+The key this project was developed against is on the Free plan, and that plan
+is genuinely limited. Measured against it, not assumed:
+
+| Capability | Free plan |
+| --- | --- |
+| Request rate | 10 requests per minute |
+| Daily requests | 100 |
+| Seasons reachable | 2022/2023 to 2024/2025 |
+| Current 2026/2027 season | No |
+| Batched `ids` lookups | No |
+
+Consequences worth planning around:
+
+* **The current season cannot be ingested via the API at all.** A 2026/2027
+  update returns nothing useful on this plan, so current-season data comes from
+  the football-data.co.uk CSVs and `update_data.py` is useful for the older
+  seasons the plan can still reach.
+* **The statistics call fails**, because it needs the `ids` parameter. This is
+  why shots come from football-data rather than the API, and why xG comes from
+  Understat directly rather than from the API.
+* **`--dry-run` still spends quota.** It suppresses the write, not the request.
+
+Anyone with a paid key gets working current-season updates, and API-Football
+also serves an `expected_goals` statistic that could serve as a second opinion
+on xG. That path is **not** implemented: it cannot be tested against the free
+key, and shipping an unvalidated xG source would be worse than the measured
+Understat values the project already has.
+
 
 ---
 
@@ -754,7 +990,7 @@ Investigate whether predicted probabilities require calibration using techniques
 
 ### Automated Data Updates
 
-Automate the process of retrieving newly completed fixtures and updating the historical dataset.
+Automate the process of retrieving newly completed fixtures and updating the historical dataset. The fetching and merging half of this is implemented in `src/api_football.py` and driven by `update_data.py`; what is not yet automated is scheduling it, and adding a data-freshness check that fails training when the CSVs are stale.
 
 ---
 
