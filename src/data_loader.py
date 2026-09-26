@@ -136,8 +136,23 @@ def load_data(league: str) -> pd.DataFrame:
     dataframe["HomeTeam"] = dataframe["HomeTeam"].astype(str)
     dataframe["AwayTeam"] = dataframe["AwayTeam"].astype(str)
 
-    # Sort matches chronologically
-    dataframe = dataframe.sort_values("Date").reset_index(drop=True)
+    # Sort matches chronologically, breaking ties on the teams involved.
+    #
+    # The teams are not there for football reasons. A league plays several
+    # matches on the same day, and sort_values defaults to an unstable sort, so
+    # the order of those matches would be whatever order glob.glob happened to
+    # return the files in. That order comes from the filesystem and differs
+    # between two checkouts of the same commit, which changes the order of the
+    # rows the rolling features and the sequential Elo ratings are built from,
+    # which changes the model, which changes the reported scores. Adding the
+    # teams makes the order depend only on the data.
+    order = [
+        column
+        for column in ("Date", "HomeTeam", "AwayTeam")
+        if column in dataframe.columns
+    ]
+
+    dataframe = dataframe.sort_values(order).reset_index(drop=True)
 
     return dataframe
 
