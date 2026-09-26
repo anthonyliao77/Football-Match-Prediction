@@ -142,6 +142,33 @@ def load_data(league: str) -> pd.DataFrame:
     return dataframe
 
 
+def get_season_range(dataframe: pd.DataFrame) -> tuple[int, int]:
+    """
+    Determines the first and last season present in a dataframe.
+
+    Both returned years are season start years, matching the convention
+    load_understat_data expects, so the range maps directly onto the seasons
+    that need to be requested. Deriving it from the data is what keeps the
+    Understat request in step with the CSVs, instead of a hardcoded range that
+    falls further behind each season.
+
+    Parameters:
+        dataframe (pd.DataFrame): A DataFrame containing a Date column.
+
+    Returns:
+        tuple[int, int]: The start years of the first and last seasons present
+        (e.g. (2020, 2023) for data covering 2020/2021 to 2023/2024).
+    """
+    seasons = sorted(
+        {get_season(date) for date in dataframe["Date"]}
+    )
+
+    start_year = int(seasons[0].split("/")[0])
+    end_year = int(seasons[-1].split("/")[0])
+
+    return start_year, end_year
+
+
 def split_by_season(
     dataframe: pd.DataFrame,
     validation_seasons: int = 1

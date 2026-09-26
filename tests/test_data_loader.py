@@ -344,3 +344,47 @@ def test_write_csv_atomic_keeps_the_original_file_if_the_write_fails(
         )
 
     assert path.read_bytes() == original.encode("utf-8-sig")
+
+
+def test_get_season_range_spans_every_season_present():
+    """
+    Test that the season range covers the first and last season in the data.
+
+    Deriving the range from the data is what keeps the Understat request in
+    step with the CSVs, instead of a hardcoded range that falls behind.
+    """
+    dataframe = pd.DataFrame({
+        "Date": pd.to_datetime([
+            "2020-09-01",
+            "2021-03-01",
+            "2023-09-01",
+        ]),
+    })
+
+    assert data_loader.get_season_range(dataframe) == (2020, 2023)
+
+
+def test_get_season_range_uses_season_boundaries():
+    """
+    Test that a season is treated as running from July to June.
+
+    A January fixture belongs to the season that began the previous July, so a
+    naive min and max of the years would request a season that does not exist.
+    """
+    dataframe = pd.DataFrame({
+        "Date": pd.to_datetime([
+            "2026-01-01",
+            "2026-08-01",
+        ]),
+    })
+
+    assert data_loader.get_season_range(dataframe) == (2025, 2026)
+
+
+def test_get_season_range_handles_single_season():
+    """Test that a single season in the data yields a one year range."""
+    dataframe = pd.DataFrame({
+        "Date": pd.to_datetime(["2024-09-01", "2025-01-01"]),
+    })
+
+    assert data_loader.get_season_range(dataframe) == (2024, 2024)
