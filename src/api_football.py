@@ -4,7 +4,6 @@ This module receives data from the API-Football API.
 
 import os
 import time
-
 from pathlib import Path
 
 import pandas as pd

@@ -399,3 +399,100 @@ def test_create_features_first_match_has_no_history():
 
     assert result.loc[0, "HomeXGA5"] == pytest.approx(0.0)
     assert result.loc[0, "AwayXGA5"] == pytest.approx(0.0)
+
+@pytest.mark.parametrize("gap", [None, float("nan"), pd.NA, ""])
+def test_number_coerces_a_gap_to_zero(gap):
+    """Every spelling of "no value" becomes 0.0 rather than a NaN."""
+
+    assert features._number(gap) == 0.0
+
+
+def test_number_passes_through_a_real_value():
+    """A present number is read as a float, not rounded or stringified."""
+
+    assert features._number(3) == 3.0
+    assert features._number("2.5") == 2.5
+    assert features._number(1.75) == 1.75
+
+
+def test_number_survives_nonsense():
+    """A value that is not a number at all is treated as missing."""
+
+    assert features._number("n/a") == 0.0
+
+
+def test_create_features_survives_missing_shots_and_xg():
+    """A gap in the shot or xG columns must not poison the rolling sums.
+
+    Every feature is a sum over a team's previous matches, so a single missing
+    value would turn the whole column into NaN. The sum would not fail, it
+    would pass NaN to the model, and the failure would surface at predict time
+    with nothing pointing back at the CSV cell that caused it.
+    """
+    dates = pd.date_range(start="2024-08-01", periods=4, freq="7D")
+
+    dataframe = pd.DataFrame(
+        {
+            "Date": dates,
+            "HomeTeam": ["Team A"] * 4,
+            "AwayTeam": ["Team B"] * 4,
+            "FTHG": [2, None, 1, 3],
+            "FTAG": [1, 0, None, 0],
+            "HST": [5, None, 4, 6],
+            "AST": [3, 2, None, 1],
+            "HS": [10, 12, None, 15],
+            "AS": [8, 7, 9, None],
+            "home_xg": [1.8, None, 1.1, 2.4],
+            "away_xg": [0.9, 1.2, None, 0.6],
+            "FTR": ["H", "H", "D", "H"],
+        }
+    )
+
+    result = features.create_features(dataframe)
+
+    numeric = result.select_dtypes(include="number")
+
+    assert not numeric.isna().any().any()
+
+    for column in [
+        "HomeGS5", "AwayGS5", "HomeGC5", "AwayGC5",
+        "HomeS5", "AwayS5", "HomeSOT5", "AwaySOT5",
+        "HomeXG5", "AwayXG5", "HomeXGA5", "AwayXGA5",
+    ]:
+        assert result[column].notna().all(), column
+
+
+def test_create_features_sums_only_the_values_that_are_present():
+    """A missing value contributes nothing rather than wiping the window."""
+
+    dates = pd.date_range(start="2024-08-01", periods=4, freq="7D")
+
+    dataframe = pd.DataFrame(
+        {
+            "Date": dates,
+            "HomeTeam": ["Team A"] * 4,
+            "AwayTeam": ["Team B"] * 4,
+            "FTHG": [2, 1, 3, 1],
+            "FTAG": [1, 0, 0, 2],
+            "HST": [5, 4, 6, 2],
+            "AST": [3, 2, 1, 3],
+            "HS": [10, 12, 15, 9],
+            "AS": [8, 7, 9, 11],
+            # The second match is missing xG for the home side.
+            "home_xg": [1.0, None, 2.0, 3.0],
+            "away_xg": [0.5, 0.5, 0.5, 0.5],
+            "FTR": ["H", "H", "H", "H"],
+        }
+    )
+
+    result = features.create_features(dataframe)
+
+    # Row 2's window is rows 0 and 1: the gap counts as 0, giving 1.0 rather
+    # than a NaN that would take the whole column with it.
+    assert result.loc[2, "HomeXG5"] == pytest.approx(1.0)
+
+    # Row 3's window is rows 0, 1 and 2: 1.0 + 0.0 + 2.0. Its own 3.0 is
+    # excluded, which is the whole point of a pre-match feature.
+    assert result.loc[3, "HomeXG5"] == pytest.approx(3.0)
+
+    assert result.loc[3, "AwayXG5"] == pytest.approx(1.5)

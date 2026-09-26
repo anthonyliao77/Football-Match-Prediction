@@ -3,10 +3,14 @@ Stores feature definitions for the evaluation model.
 """
 
 # League settings.
+#
+# "understat" is Understat's own URL name for the league, which is what its
+# undocumented JSON endpoint takes. It is not a country-prefixed name; see
+# src/understat_client.py.
 LEAGUES = {
     "PremierLeague": {
         "football_data": "football_data/PremierLeague",
-        "understat": "ENG-Premier League",
+        "understat": "EPL",
         "api_football_id": 39,
         "div": "E0",
         # Only the Premier League CSVs carry a Referee column, so the
@@ -15,14 +19,14 @@ LEAGUES = {
     },
     "LaLiga": {
         "football_data": "football_data/LaLiga",
-        "understat": "ESP-La Liga",
+        "understat": "La_liga",
         "api_football_id": 140,
         "div": "SP1",
         "writes_referee": False,
     },
     "SerieA": {
         "football_data": "football_data/SerieA",
-        "understat": "ITA-Serie A",
+        "understat": "Serie_A",
         "api_football_id": 135,
         "div": "I1",
         "writes_referee": False,
@@ -54,6 +58,10 @@ TEAM_NAME_MAP = {
     "Real Sociedad": "Sociedad",
     "Real Valladolid": "Valladolid",
     "Rayo Vallecano": "Vallecano",
+    # Clubs promoted into the 2026/2027 season, which Understat lists under
+    # their full registered names.
+    "Racing Santander": "Santander",
+    "Deportivo La Coruna": "La Coruna",
 }
 
 # Mapping of team names between the API-Football fixtures endpoint and the

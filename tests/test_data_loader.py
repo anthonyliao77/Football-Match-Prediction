@@ -38,6 +38,61 @@ def test_load_data_combines_csv_files(tmp_path, monkeypatch):
     assert list(result["AwayTeam"]) == ["Team B", "Team D"]
 
 
+def test_load_data_orders_same_day_matches_by_team(tmp_path, monkeypatch):
+    """Test that matches sharing a date are ordered by the teams involved.
+
+    A league plays several matches on the same day, and an unstable sort would
+    leave their order up to the filesystem, which is not the same on every
+    machine. The rolling features and the sequential Elo ratings are both built
+    from the row order, so an unstable sort makes the model depend on the
+    checkout.
+    """
+    league_path = tmp_path / "PremierLeague"
+    league_path.mkdir()
+
+    (league_path / "2023.csv").write_text(
+        "Date,HomeTeam,AwayTeam,FTHG,FTAG,FTR\n"
+        "01/08/2023,Team C,Team D,1,1,D\n"
+        "01/08/2023,Team A,Team B,2,1,H\n"
+        "01/08/2023,Team B,Team A,0,2,A\n"
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    result = data_loader.load_data("PremierLeague")
+
+    assert list(result["HomeTeam"]) == ["Team A", "Team B", "Team C"]
+
+
+def test_load_data_ignores_the_order_files_are_read_in(tmp_path, monkeypatch):
+    """Test that two directories holding the same matches load identically."""
+    def write(directory, first, second):
+        (directory / "PremierLeague").mkdir(parents=True)
+        (directory / "PremierLeague" / "a.csv").write_text(
+            "Date,HomeTeam,AwayTeam,FTHG,FTAG,FTR\n" + first
+        )
+        (directory / "PremierLeague" / "b.csv").write_text(
+            "Date,HomeTeam,AwayTeam,FTHG,FTAG,FTR\n" + second
+        )
+
+    forward = tmp_path / "forward"
+    reverse = tmp_path / "reverse"
+
+    match_one = "05/08/2023,Team E,Team F,1,0,H\n"
+    match_two = "05/08/2023,Team A,Team B,3,1,H\n"
+
+    write(forward, match_one, match_two)
+    write(reverse, match_two, match_one)
+
+    monkeypatch.chdir(forward)
+    first = data_loader.load_data("PremierLeague")
+
+    monkeypatch.chdir(reverse)
+    second = data_loader.load_data("PremierLeague")
+
+    pd.testing.assert_frame_equal(first, second)
+
+
 def test_load_data_normalizes_dates(tmp_path, monkeypatch):
     """Test that dates are converted to normalized pandas timestamps."""
 
@@ -344,3 +399,47 @@ def test_write_csv_atomic_keeps_the_original_file_if_the_write_fails(
         )
 
     assert path.read_bytes() == original.encode("utf-8-sig")
+
+
+def test_get_season_range_spans_every_season_present():
+    """
+    Test that the season range covers the first and last season in the data.
+
+    Deriving the range from the data is what keeps the Understat request in
+    step with the CSVs, instead of a hardcoded range that falls behind.
+    """
+    dataframe = pd.DataFrame({
+        "Date": pd.to_datetime([
+            "2020-09-01",
+            "2021-03-01",
+            "2023-09-01",
+        ]),
+    })
+
+    assert data_loader.get_season_range(dataframe) == (2020, 2023)
+
+
+def test_get_season_range_uses_season_boundaries():
+    """
+    Test that a season is treated as running from July to June.
+
+    A January fixture belongs to the season that began the previous July, so a
+    naive min and max of the years would request a season that does not exist.
+    """
+    dataframe = pd.DataFrame({
+        "Date": pd.to_datetime([
+            "2026-01-01",
+            "2026-08-01",
+        ]),
+    })
+
+    assert data_loader.get_season_range(dataframe) == (2025, 2026)
+
+
+def test_get_season_range_handles_single_season():
+    """Test that a single season in the data yields a one year range."""
+    dataframe = pd.DataFrame({
+        "Date": pd.to_datetime(["2024-09-01", "2025-01-01"]),
+    })
+
+    assert data_loader.get_season_range(dataframe) == (2024, 2024)
