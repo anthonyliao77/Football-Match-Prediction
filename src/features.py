@@ -6,6 +6,28 @@ from collections import defaultdict
 import pandas as pd
 
 
+def _number(value) -> float:
+    """
+    Coerces a match statistic to a float, treating a gap as zero.
+
+    Every rolling feature is a plain sum over a team's previous matches, so a
+    single missing value would otherwise turn the whole feature into NaN. The
+    sum would not fail, it would quietly pass a NaN column to the model, and
+    scikit-learn rejects that at predict time with an error that points nowhere
+    near the CSV cell that caused it.
+    """
+    if value is None:
+        return 0.0
+
+    try:
+        if pd.isna(value):
+            return 0.0
+
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
     """
     Creates a new DataFrame containing pre-match features for
@@ -102,22 +124,22 @@ def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
         # store team stats
         team_stats[home_team].append({
             "points": calculate_points(match["FTR"], True),
-            "goals_scored": match["FTHG"],
-            "goals_conceded": match["FTAG"],
-            "shots_on_target": match["HST"],
-            "shots": match["HS"],
-            "xG": match["home_xg"],
-            "xGA": match["away_xg"]
+            "goals_scored": _number(match["FTHG"]),
+            "goals_conceded": _number(match["FTAG"]),
+            "shots_on_target": _number(match["HST"]),
+            "shots": _number(match["HS"]),
+            "xG": _number(match["home_xg"]),
+            "xGA": _number(match["away_xg"])
         })
 
         team_stats[away_team].append({
             "points": calculate_points(match["FTR"], False),
-            "goals_scored": match["FTAG"],
-            "goals_conceded": match["FTHG"],
-            "shots_on_target": match["AST"],
-            "shots": match["AS"],
-            "xG": match["away_xg"],
-            "xGA": match["home_xg"]
+            "goals_scored": _number(match["FTAG"]),
+            "goals_conceded": _number(match["FTHG"]),
+            "shots_on_target": _number(match["AST"]),
+            "shots": _number(match["AS"]),
+            "xG": _number(match["away_xg"]),
+            "xGA": _number(match["home_xg"])
         })
 
     return pd.DataFrame(features)

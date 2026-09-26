@@ -19,9 +19,71 @@ from config import (
     LEAGUES,
 )
 from src.data_loader import load_data, split_by_season
-from src.elo import create_elo_features
+from src.elo import create_elo_features, get_season
 from src.features import create_features
-from src.understat_loader import load_understat_data
+from src.xg import XG_COLUMNS
+
+
+def _xg_coverage_by_season(dataframe) -> pd.DataFrame:
+    """
+    Counts, per season, how many rows carry measured xG and how many do not.
+
+    Parameters:
+        dataframe: DataFrame containing match data with xG columns.
+
+    Returns:
+        A frame indexed by season with a row count and a gap count.
+    """
+    seasons = dataframe["Date"].map(get_season)
+    gaps = dataframe[XG_COLUMNS].isna().any(axis=1)
+
+    return (
+        pd.DataFrame({"season": seasons, "gap": gaps})
+        .groupby("season")["gap"]
+        .agg(rows="size", gaps="sum")
+    )
+
+
+def _warn_on_missing_xg(dataframe, league: str) -> None:
+    """
+    Reports the xG the run is about to do without.
+
+    xG reaches the model only through four rolling features, and a row with no
+    xG contributes zero to them. That is invisible in the output, so it is
+    called out here: a validation season without xG produces scores that look
+    worse than the model is, and nothing in the metrics would say why.
+
+    Parameters:
+        dataframe: DataFrame containing match data with xG columns.
+        league (str): The league name, for the suggested command.
+    """
+    coverage = _xg_coverage_by_season(dataframe)
+
+    measured = int(coverage["rows"].sum() - coverage["gaps"].sum())
+
+    print(
+        f"xG coverage: {measured} of {len(dataframe)} rows carry measured xG"
+    )
+
+    # split_by_season holds out the most recent season, so that is the one the
+    # reported scores are computed on.
+    newest = coverage.index[-1]
+    gaps = int(coverage.loc[newest, "gaps"])
+    rows = int(coverage.loc[newest, "rows"])
+
+    if not gaps:
+        return
+
+    print(
+        f"\n{'!' * 72}\n"
+        f"WARNING: {gaps} of {rows} rows in {newest} have no measured xG.\n"
+        f"Understat has not published that season, so HomeXG5, AwayXG5,\n"
+        f"HomeXGA5 and AwayXGA5 will read 0 for every row of the validation\n"
+        f"set. The scores below are therefore pessimistic, and the cause will\n"
+        f"not be visible in the metrics themselves.\n"
+        f"Try: python backfill_xg.py --league {league}\n"
+        f"{'!' * 72}"
+    )
 
 
 def train_model(league):
@@ -50,24 +112,9 @@ def train_model(league):
         league=league_config["football_data"]
     )
 
-    # Load xg data from understat for the specified league and season range
-    xg_data = load_understat_data(
-        league=league_config["understat"],
-        start_year=2020,
-        end_year=2025
-    )
-
-    # Merge the match data and xg data based on date and team names
-    dataframe = pd.merge_asof(
-        dataframe,
-        xg_data,
-        left_on="Date",
-        right_on="date",
-        left_by=["HomeTeam", "AwayTeam"],
-        right_by=["home_team", "away_team"],
-        direction="nearest",
-        tolerance=pd.Timedelta(days=1)
-    )
+    # Checked before the features are built, because create_features returns a
+    # fresh frame and does not carry the xG columns through.
+    _warn_on_missing_xg(dataframe, league)
 
     # Create features for the model using the combined match data
     dataframe = create_features(dataframe=dataframe)
