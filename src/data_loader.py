@@ -3,10 +3,106 @@ Loads and combines football match data from dataset.
 """
 
 import glob
+import os
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 
 from src.elo import get_season
+
+
+DEFAULT_LINE_TERMINATOR = "\n"
+
+
+def read_csv_format(path) -> tuple[str, str]:
+    """
+    Detects the byte-level formatting of an existing CSV.
+
+    The season CSVs come from football-data.co.uk, which ships some of them with
+    a UTF-8 BOM and all of them with Windows line endings. Reading one into
+    pandas and writing it back out through ``to_csv`` silently drops the BOM and
+    rewrites every line ending, which turns a change to three columns into a
+    rewrite of the whole file and buries the actual edit in the diff.
+
+    The convention is read from the file rather than fixed in config because the
+    CSVs are not consistent with each other, and normalising them here would
+    bury a real change all over again.
+
+    Parameters:
+        path: An existing CSV path.
+
+    Returns:
+        tuple[str, str]: The encoding to write with, and the line terminator.
+    """
+    with open(path, "rb") as handle:
+        head = handle.read(4096)
+
+    encoding = "utf-8-sig" if head.startswith(b"\xef\xbb\xbf") else "utf-8"
+
+    terminator = (
+        "\r\n" if b"\r\n" in head else DEFAULT_LINE_TERMINATOR
+    )
+
+    return encoding, terminator
+
+
+def write_csv_atomic(
+    path,
+    dataframe: pd.DataFrame,
+    encoding: str | None = None,
+    line_terminator: str | None = None,
+) -> None:
+    """
+    Writes a DataFrame to a CSV without risking a half-written file.
+
+    The data is written to a temporary file in the destination directory and
+    then moved into place, so an interrupted write cannot truncate a season of
+    data. The temporary file shares the destination filesystem, which is what
+    makes the move atomic.
+
+    The encoding and line terminator default to whatever the destination file
+    already uses, so rewriting it does not churn the whole file. A destination
+    that does not exist yet, which is a season being created rather than
+    updated, gets plain UTF-8 and Unix line endings.
+
+    Parameters:
+        path: The destination CSV path.
+        dataframe (pd.DataFrame): The rows to write.
+        encoding (str | None): Text encoding, or None to match the destination.
+        line_terminator (str | None): Row terminator, or None to match.
+    """
+    destination = Path(path)
+
+    if encoding is None or line_terminator is None:
+        if destination.exists():
+            detected_encoding, detected_terminator = read_csv_format(destination)
+
+            encoding = encoding or detected_encoding
+            line_terminator = line_terminator or detected_terminator
+        else:
+            encoding = encoding or "utf-8"
+            line_terminator = line_terminator or DEFAULT_LINE_TERMINATOR
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile(
+        "w",
+        dir=destination.parent,
+        delete=False,
+        suffix=".tmp",
+        encoding=encoding,
+        newline="",
+    ) as handle:
+        temporary_path = Path(handle.name)
+        dataframe.to_csv(
+            temporary_path,
+            index=False,
+            encoding=encoding,
+            lineterminator=line_terminator,
+        )
+
+    os.replace(temporary_path, destination)
 
 
 def load_data(league: str) -> pd.DataFrame:
