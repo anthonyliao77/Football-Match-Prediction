@@ -17,7 +17,7 @@ import glob
 import pandas as pd
 
 from config import LEAGUES
-from src.data_loader import write_csv_atomic
+from src.data_loader import get_season_range, write_csv_atomic
 from src.understat_loader import UnderstatDataError, load_understat_data
 from src.xg import SOURCE_COLUMN, UNDERSTAT_SOURCE, XG_COLUMNS
 
@@ -262,12 +262,21 @@ def backfill_league_xg(league: str, dry_run: bool = False) -> dict:
         [frame for _, frame in frames], ignore_index=True
     )
 
-    seasons = sorted(
-        {f"{date.year}/{date.year + 1}" for date in combined[DATE_KEY]}
+    # The range comes from the same July boundary the rest of the project uses.
+    #
+    # It used to be worked out here as year-of-date plus one, which is wrong for
+    # every match from January to June: a fixture on 30 May 2027 belongs to
+    # 2026/2027, not to a 2027/2028 season that does not exist. That only
+    # became visible once the season CSVs started holding the rest of the
+    # schedule, because until then the newest date in the data was in May and
+    # the wrong answer happened to name a season Understat does have.
+    #
+    # The parsed dates are already on the frame under DATE_KEY, and
+    # get_season_range reads the Date column, so it is handed a one-column
+    # frame rather than a copy of every column of every season.
+    start_year, end_year = get_season_range(
+        pd.DataFrame({"Date": combined[DATE_KEY]})
     )
-
-    start_year = int(seasons[0].split("/")[0])
-    end_year = int(seasons[-1].split("/")[0])
 
     # Loaded before any write, so a missing Understat season aborts the whole
     # backfill instead of half-populating the league.
