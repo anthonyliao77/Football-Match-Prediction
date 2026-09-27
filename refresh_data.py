@@ -43,6 +43,7 @@ is for everything to succeed while one match sits unwritten.
 import argparse
 import sys
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 
 from backfill_xg import backfill_league_xg
 from config import LEAGUES
@@ -58,9 +59,11 @@ class Summary:
 
     Attributes:
         failed (int): Leagues that could not be refreshed.
-        stale (int): Played matches left with a blank result, across
-            checked leagues. The name is the old one and stays, since it
-            reads as what it is: the season not being current.
+        stale (int): Played matches left with a blank result, past any
+            --max-age-days grace period, across checked leagues. With no grace
+            period set this is every unwritten match. The name is the old one
+            and stays, since it reads as what it is: the season not being
+            current.
         unchecked (int): Leagues whose count could not be established.
     """
 
@@ -74,7 +77,11 @@ def parse_arguments() -> argparse.Namespace:
     Reads the command line.
 
     Returns:
-        argparse.Namespace: The requested league, season, and whether to write.
+        argparse.Namespace: The requested league, season, whether to write, and
+        the grace period to allow on an unwritten match.
+
+    Raises:
+        SystemExit: If --max-age-days is negative.
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -118,10 +125,89 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
 
-    return parser.parse_args()
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=None,
+        help=(
+            "Only fail --require-fresh for a match that has been played more "
+            "than this many days with no result. Without it every unwritten "
+            "match fails, which is right before a prediction and wrong for a "
+            "scheduled check, where a match left unwritten this morning is one "
+            "nobody has got to yet."
+        ),
+    )
+
+    arguments = parser.parse_args()
+
+    if arguments.max_age_days is not None and arguments.max_age_days < 0:
+        parser.error(
+            "--max-age-days cannot be negative, since that would mean a match "
+            "has to be in the future to be overdue."
+        )
+
+    return arguments
 
 
-def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
+def _today() -> date:
+    """
+    The day an unwritten match's age is measured against.
+
+    UTC rather than the runner's local day, so a local run and a scheduled one
+    agree about what "three days old" means. The threshold being compared is a
+    week, so the two are at most a day apart, but a check that gives a
+    different answer depending on where it ran is not one anybody can reason
+    about from a log.
+
+    Returns:
+        date: Today, in UTC.
+    """
+    return datetime.now(tz=timezone.utc).date()
+
+
+def _overdue(dates: list, today, max_age_days: int | None) -> int:
+    """
+    Counts the unwritten matches that are old enough to fail a freshness check.
+
+    A threshold of None means there is no grace period, so every unwritten
+    match counts. That is the right answer before a prediction, where the CSV is
+    about to be read, and the wrong one for a scheduled monitor, where a match
+    left unwritten this morning is a match nobody has got to yet.
+
+    The default is deliberately None rather than 0. A zero-day threshold would
+    mean "older than today", which quietly stops counting a match played a few
+    hours ago, and a guard that gets weaker the moment a flag is added is not
+    one anybody can reason about.
+
+    Parameters:
+        dates (list): The dates of the matches with no result on file.
+        today (date): The day to measure the age against.
+        max_age_days (int | None): Days to allow, or None for no grace period.
+
+    Returns:
+        int: How many of them are past the threshold.
+    """
+    if max_age_days is None:
+        return len(dates)
+
+    # pandas timestamps subclass datetime, so a plain isinstance covers both a
+    # timestamp from the fixtures step and a date someone passed in directly.
+    def age(since) -> int:
+        if isinstance(since, datetime):
+            since = since.date()
+
+        return (today - since).days
+
+    return sum(1 for since in dates if age(since) > max_age_days)
+
+
+def refresh_league(
+    league: str,
+    season: str | None,
+    dry_run: bool,
+    max_age_days: int | None = None,
+    today=None,
+) -> dict:
     """
     Refreshes one league's fixtures and then its xG.
 
@@ -129,10 +215,17 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
         league (str): The league directory name, e.g. "PremierLeague".
         season (str | None): Season to fill, or None to take the newest.
         dry_run (bool): If True, report without writing.
+        max_age_days (int | None): How old an unwritten match must be to count
+            as stale, or None to count them all.
+        today (date | None): The day ages are measured against, for
+            tests. Defaults to the current date.
 
     Returns:
         dict: The fixture and xG counts, and any error raised for this league.
     """
+    if today is None:
+        today = _today()
+
     directory = LEAGUES[league]["football_data"]
 
     if season is None:
@@ -148,6 +241,10 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
         # Defaulting to 0 would report a league as clean for the one thing we
         # did not manage to check.
         "needs_results": None,
+        # The subset of the above that is old enough to fail --require-fresh.
+        # Kept alongside the total rather than replacing it, so the report can
+        # show that a match is unwritten and still be within its grace period.
+        "needs_results_overdue": None,
         "results_filled": 0,
         "results_added": 0,
         "disagreements": 0,
@@ -176,6 +273,10 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
             "match_requests",
         ):
             row[key] = fixtures[key]
+
+        row["needs_results_overdue"] = _overdue(
+            fixtures["unwritten_dates"], today, max_age_days
+        )
     except (UnderstatUnavailable, FileNotFoundError) as error:
         row["error"] = str(error)
 
@@ -192,13 +293,17 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
     return row
 
 
-def report(rows: list[dict], dry_run: bool) -> Summary:
+def report(
+    rows: list[dict], dry_run: bool, max_age_days: int | None = None
+) -> Summary:
     """
     Prints the table and returns what it found.
 
     Parameters:
         rows (list[dict]): One row per league, from refresh_league.
         dry_run (bool): Whether this was a dry run.
+        max_age_days (int | None): The grace period in force, or None if every
+            unwritten match counts.
 
     Returns:
         Summary: The failed, stale and unchecked counts, for the exit status.
@@ -210,9 +315,18 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
     print("many were filled this run. An xG count of zero is the normal")
     print("case: it only fills cells that are empty.\n")
 
+    if max_age_days is None:
+        print("Overdue is the Unwritten count, since no grace period is set.\n")
+    else:
+        print(
+            f"Overdue is the Unwritten count for matches played more than "
+            f"{max_age_days} days ago,\nwhich is what decides the exit "
+            f"status.\n"
+        )
+
     header = (
         f"{'League':<16}{'Fixtures':>10}{'Re-dated':>10}{'Results':>9}"
-        f"{'xG':>8}{'Unwritten':>11}"
+        f"{'xG':>8}{'Unwritten':>11}{'Overdue':>9}"
     )
 
     print(header)
@@ -220,6 +334,7 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
 
     failed = 0
     stale = 0
+    unwritten = 0
     unchecked = 0
 
     for row in rows:
@@ -228,10 +343,13 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
 
         if row["needs_results"] is None:
             unchecked += 1
-            unwritten = "-"
+            unwritten_text = "-"
+            overdue_text = "-"
         else:
-            stale += row["needs_results"]
-            unwritten = str(row["needs_results"])
+            unwritten += row["needs_results"]
+            stale += row["needs_results_overdue"]
+            unwritten_text = str(row["needs_results"])
+            overdue_text = str(row["needs_results_overdue"])
 
         results = (
             row.get("results_filled", 0) + row.get("results_added", 0)
@@ -243,7 +361,8 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
             f"{row['rescheduled']:>10}"
             f"{results:>9}"
             f"{row['xg_filled']:>8}"
-            f"{unwritten:>11}"
+            f"{unwritten_text:>11}"
+            f"{overdue_text:>9}"
         )
 
         # The error goes after the counts, not instead of them. A league that
@@ -264,10 +383,10 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
         "download to make."
     )
 
-    if stale:
+    if unwritten:
         print(
-            f"\n{stale} played "
-            f"{'match is' if stale == 1 else 'matches are'} still without a "
+            f"\n{unwritten} played "
+            f"{'match is' if unwritten == 1 else 'matches are'} still without a "
             f"result in the CSV."
         )
         print(
@@ -275,6 +394,18 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
             "unplayed\nfixture, a match with no shots to read, or a request "
             "that failed. Each is\nlisted by the fixtures step."
         )
+
+        if max_age_days is not None and stale < unwritten:
+            recent = unwritten - stale
+
+            print(
+                f"\n{stale} of those "
+                f"{'is' if stale == 1 else 'are'} past the {max_age_days}-day "
+                f"grace period, so --require-fresh "
+                f"{'fails' if stale else 'does not fail'} on them. The other "
+                f"{recent} {'is' if recent == 1 else 'are'} recent enough "
+                "that nobody has been asked to look yet."
+            )
     elif not failed and not unchecked:
         print("\nEvery played match on file has its result.")
 
@@ -285,6 +416,11 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
             f"\nThe count is unknown for {unchecked} of {total} "
             f"{'league' if total == 1 else 'leagues'}, shown as '-', because the "
             "refresh failed before it could count them. A dash is not a zero."
+        )
+        print(
+            "An unchecked league is not a league with nothing outstanding, so "
+            "the grace\nperiod above does not apply to it. It fails the run "
+            "either way."
         )
 
     if failed:
@@ -313,11 +449,16 @@ def main() -> int:
     leagues = list(LEAGUES) if arguments.league == "all" else [arguments.league]
 
     rows = [
-        refresh_league(league, arguments.season, arguments.dry_run)
+        refresh_league(
+            league,
+            arguments.season,
+            arguments.dry_run,
+            max_age_days=arguments.max_age_days,
+        )
         for league in leagues
     ]
 
-    summary = report(rows, arguments.dry_run)
+    summary = report(rows, arguments.dry_run, arguments.max_age_days)
 
     if summary.failed:
         return 1

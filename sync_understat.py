@@ -134,6 +134,24 @@ def _blank_result(frame: pd.DataFrame) -> pd.Series:
     return frame["FTR"].isna() | (frame["FTR"].astype(str).str.strip() == "")
 
 
+def _dates_of(rows: list[dict]) -> list:
+    """
+    Plucks the dates out of the matches deliberately left alone.
+
+    Reported alongside the count because the count alone cannot answer the
+    question the refresh actually needs to ask. A match left unwritten an hour
+    ago is one someone will write tonight; one left unwritable for three weeks
+    is a fault nobody has looked at, and only the date tells those apart.
+
+    Parameters:
+        rows (list[dict]): The unwritten matches, each carrying a date.
+
+    Returns:
+        list: Their dates, in the order they were found.
+    """
+    return [row["date"] for row in rows]
+
+
 def _shot_gaps(frame: pd.DataFrame, index) -> list[str]:
     """
     Names the shot columns a row that already has a result is still missing.
@@ -659,6 +677,7 @@ def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
             "already_present": len(present),
             "rescheduled": len(rescheduled),
             "needs_results": len(abandoned),
+            "unwritten_dates": _dates_of(abandoned),
             "results_filled": len(filling),
             "results_added": len(appending),
             "disagreements": len(disagreements),
@@ -775,6 +794,7 @@ def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
         "already_present": len(present),
         "rescheduled": len(rescheduled),
         "needs_results": len(abandoned),
+        "unwritten_dates": _dates_of(abandoned),
         "results_filled": len(filling),
         "results_added": len(appending),
         "disagreements": len(disagreements),

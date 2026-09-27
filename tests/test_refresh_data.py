@@ -8,7 +8,9 @@ the number it leads with is the one a person running it needs, which is how far
 behind their results download is.
 """
 
+import re
 import sys
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -19,12 +21,18 @@ from config import LEAGUES
 from sync_understat import UnderstatUnavailable
 
 
-def argparse_namespace(league="all", dry_run=False, require_fresh=False):
+def argparse_namespace(
+    league="all", dry_run=False, require_fresh=False, max_age_days=None
+):
     """Builds a stand-in for the parsed command line."""
     import argparse
 
     return argparse.Namespace(
-        league=league, season=None, dry_run=dry_run, require_fresh=require_fresh
+        league=league,
+        season=None,
+        dry_run=dry_run,
+        require_fresh=require_fresh,
+        max_age_days=max_age_days,
     )
 
 
@@ -105,6 +113,8 @@ def stub(monkeypatch, fixtures=None, xg=None, fixtures_error=None, xg_error=None
 # editing eleven stubs, and a test cannot pass against a shape the real step no
 # longer returns.
 def fixtures_summary(**counts):
+    unwritten = counts.pop("unwritten_dates", None)
+
     summary = {
         "added": 0,
         "already_present": 0,
@@ -117,6 +127,14 @@ def fixtures_summary(**counts):
         "unknown_teams": [],
     }
     summary.update(counts)
+
+    if unwritten is None:
+        # Synthesised to match needs_results so the count-based tests keep
+        # working, with a date that is old enough to be overdue at any sensible
+        # threshold. A test that cares about the age passes real dates instead.
+        unwritten = [pd.Timestamp("2026-01-01")] * summary["needs_results"]
+
+    summary["unwritten_dates"] = unwritten
 
     return summary
 
@@ -680,3 +698,280 @@ def test_the_column_no_longer_calls_a_result_gap_stale(monkeypatch, league_dirs,
 
     assert "Unwritten" in output
     assert "Every played match on file has its result" in output
+
+
+# The grace period is a policy about how patient a check should be, so these
+# pin a reference day rather than reading the wall clock. A threshold test that
+# passed today and failed next month would be worse than no test at all.
+TODAY = date(2026, 9, 27)
+
+
+class FakeClock:
+    """
+    Stands in for datetime so a match can be described as a given age old.
+
+    Patched over refresh_data._today rather than over the datetime it uses, so
+    the module's own type checks keep working while the clock is standing still.
+    """
+
+    def __init__(self, today):
+        self._today = today
+
+    def __call__(self):
+        return self._today
+
+
+def days_ago(days):
+    return pd.Timestamp(TODAY - timedelta(days=days))
+
+
+def test_a_recent_unwritten_match_does_not_fail_a_check(monkeypatch, league_dirs, capsys):
+    """The whole reason the flag exists.
+
+    A match played three days ago with no result is not a fault. It is a match
+    nobody has got round to, and a scheduled check that fails on it every
+    morning is a check people learn to ignore, which costs you the one week it
+    was built to catch."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        needs_results=1,
+        unwritten_dates=[days_ago(3)],
+    ))
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(
+            league="PremierLeague",
+            dry_run=True,
+            require_fresh=True,
+            max_age_days=7,
+        ),
+    )
+    monkeypatch.setattr(refresh_data, "_today", lambda: TODAY)
+
+    status = refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    assert status == 0
+    # Still shown, because "unwritten" and "overdue" are different questions
+    # and collapsing them would hide a match that needs writing.
+    assert "1 played match is still without a result" in output
+    assert "does not fail" in output
+
+
+def test_an_old_unwritten_match_still_fails(monkeypatch, league_dirs, capsys):
+    """The grace period must not swallow the case it exists for."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        needs_results=1,
+        unwritten_dates=[days_ago(20)],
+    ))
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(
+            league="PremierLeague",
+            dry_run=True,
+            require_fresh=True,
+            max_age_days=7,
+        ),
+    )
+    monkeypatch.setattr(refresh_data, "_today", lambda: TODAY)
+
+    status = refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    assert status == 1
+    assert "1 played match is still without a result" in output
+
+    # No split to explain when every unwritten match is overdue, so the
+    # breakdown is not printed. The count in the table is the one that matters.
+    premier = next(
+        line for line in output.splitlines()
+        if line.startswith("PremierLeague")
+    )
+    assert re.search(r"1\s+1\s*$", premier), premier
+
+
+def test_the_threshold_is_exclusive(monkeypatch, league_dirs):
+    """Seven days old is inside the period; eight is not.
+
+    A boundary that is off by one is a bug nobody finds, because the difference
+    only shows up on the one match that lands exactly on it."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        needs_results=1,
+        unwritten_dates=[days_ago(7)],
+    ))
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(
+            league="PremierLeague",
+            dry_run=True,
+            require_fresh=True,
+            max_age_days=7,
+        ),
+    )
+    monkeypatch.setattr(refresh_data, "_today", lambda: TODAY)
+
+    assert refresh_data.main() == 0
+
+
+def test_no_flag_counts_every_unwritten_match(monkeypatch, league_dirs, capsys):
+    """Absent the flag the behaviour is exactly what it was.
+
+    This is the case that matters most, because it is every existing caller.
+    A guard that quietly got weaker when a flag was added is not one anybody can
+    rely on, and the pre-prediction check is the one that has to stay strict."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        needs_results=1,
+        unwritten_dates=[days_ago(0)],
+    ))
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(
+            league="PremierLeague", dry_run=True, require_fresh=True
+        ),
+    )
+    monkeypatch.setattr(refresh_data, "_today", lambda: TODAY)
+
+    status = refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    # Played today, and still fails, because there is no grace period to be
+    # inside of.
+    assert status == 1
+    assert "no grace period is set" in output
+
+
+def test_a_failed_league_is_not_excused_by_the_grace_period(
+    monkeypatch, league_dirs, capsys
+):
+    """An unchecked league is not a young match.
+
+    The grace period answers "how long has this match been unwritten". A league
+    that failed before it could be counted is a different thing entirely: nobody
+    knows what it holds, and a filter over match ages cannot turn unknown into
+    fine. Letting it through would make the flag a way to silence the loudest
+    failure the report has."""
+    def run_fixtures(league, season, dry_run=False, **kwargs):
+        if league == "PremierLeague":
+            raise UnderstatUnavailable("nothing listed")
+
+        return fixtures_summary()
+
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
+    monkeypatch.setattr(
+        refresh_data,
+        "backfill_league_xg",
+        lambda league, dry_run=False: {
+            "xg_filled": 0,
+            "rows": 0,
+            "rows_unmatched": 0,
+        },
+    )
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(
+            league="PremierLeague",
+            dry_run=True,
+            require_fresh=True,
+            max_age_days=30,
+        ),
+    )
+    monkeypatch.setattr(refresh_data, "_today", lambda: TODAY)
+
+    status = refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    assert status == 1
+    assert "fails the run either way" in output
+
+
+def test_the_two_columns_disagree_when_a_grace_period_is_set(
+    monkeypatch, league_dirs, capsys
+):
+    """Unwritten and Overdue are separate numbers and the table shows both.
+
+    Showing only the overdue count would report a clean run while three matches
+    sat unwritten, and showing only the unwritten count would report three
+    next to an exit status of zero and read as a contradiction."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        needs_results=3,
+        unwritten_dates=[days_ago(2), days_ago(30), days_ago(60)],
+    ))
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(
+            league="PremierLeague",
+            dry_run=True,
+            require_fresh=True,
+            max_age_days=7,
+        ),
+    )
+    monkeypatch.setattr(refresh_data, "_today", lambda: TODAY)
+
+    status = refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    assert status == 1
+    assert "3 played matches are still without a result" in output
+    assert "2 of those are past the 7-day grace period" in output
+    assert "The other 1 is recent enough" in output
+
+    # The league row carries 3 unwritten and 2 overdue.
+    premier = next(
+        line for line in output.splitlines()
+        if line.startswith("PremierLeague")
+    )
+    assert re.search(r"3\s+2\s*$", premier), premier
+
+
+def test_a_negative_threshold_is_rejected_by_the_command_line(monkeypatch):
+    """Driven through the real parser, because a stubbed namespace never checks.
+
+    A negative grace period would mean a match has to be in the future to be
+    overdue, which would turn the check into a permanent pass rather than an
+    error."""
+    monkeypatch.setattr(
+        sys, "argv", ["refresh_data.py", "--max-age-days", "-1"]
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        refresh_data.parse_arguments()
+
+    assert exit_info.value.code == 2
+
+
+def test_the_max_age_flag_is_parsed_by_the_command_line(
+    monkeypatch, league_dirs, capsys
+):
+    """Same reason as the --require-fresh parser test: the others replace the
+    parsed arguments wholesale, so a flag never added to the parser would pass
+    every one of them."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        needs_results=1,
+        unwritten_dates=[days_ago(30)],
+    ))
+
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "refresh_data.py", "--require-fresh", "--dry-run",
+            "--max-age-days", "7", "--league", "PremierLeague",
+        ],
+    )
+    monkeypatch.setattr(refresh_data, "_today", lambda: TODAY)
+
+    assert refresh_data.main() == 1
