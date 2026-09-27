@@ -407,3 +407,60 @@ def test_backfill_handles_an_empty_source_column(league_dir, monkeypatch):
 
     assert (result[SOURCE_COLUMN] == "understat").all()
     assert result["home_xg"].tolist() == [2.10, 2.80]
+
+
+def test_the_requested_seasons_survive_the_july_boundary(
+    league_dir, monkeypatch
+):
+    """A fixture in May belongs to the season that began the previous July.
+
+    The range of seasons to ask Understat for used to be worked out here as the
+    year of the date plus one. That is right for August and wrong for everything
+    else: 30 May 2027 is in 2026/2027, not in a 2027/2028 season that does not
+    exist. It stayed hidden while the CSVs ended in May, because the wrong
+    answer then named a season Understat does have, and it only surfaced once
+    the files started carrying the rest of the schedule.
+    """
+    path = write_season(league_dir, "2026-2027.csv", base_rows())
+
+    rows = pd.read_csv(path)
+
+    # The last fixture of a season, and the first of the one before it.
+    rows = pd.concat(
+        [rows, pd.DataFrame([
+            {
+                "Date": "30/05/2027",
+                "HomeTeam": "Arsenal",
+                "AwayTeam": "Chelsea",
+                "FTHG": 1,
+                "FTAG": 0,
+                "FTR": "H",
+            },
+            {
+                "Date": "16/08/2026",
+                "HomeTeam": "Chelsea",
+                "AwayTeam": "Arsenal",
+                "FTHG": 2,
+                "FTAG": 2,
+                "FTR": "D",
+            },
+        ])],
+        ignore_index=True,
+    )
+
+    rows.to_csv(path, index=False)
+
+    requested = {}
+
+    def record(**kwargs):
+        requested.update(kwargs)
+
+        return matching_understat()
+
+    monkeypatch.setattr(backfill_xg, "load_understat_data", record)
+
+    backfill_xg.backfill_league_xg("PremierLeague")
+
+    # 2023 to 2026 as start years, and no 2027.
+    assert requested["start_year"] == 2023
+    assert requested["end_year"] == 2026

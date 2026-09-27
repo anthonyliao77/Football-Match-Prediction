@@ -337,7 +337,8 @@ June 2026 → 2025/26
 July 2026 → 2026/27
 ```
 
-The latest complete season is held out for validation.
+The most recent season before the one being predicted is held out for
+validation, and the season under prediction is used for neither.
 
 For example:
 
@@ -665,7 +666,7 @@ Data through 2026-09-14 (2320 matches, 30 teams)
 | --- | --- |
 | `--league` | Required. `PremierLeague`, `LaLiga` or `SerieA` |
 | `--home` / `--away` | Required. Team names as the season CSVs spell them |
-| `--date` | Optional, `YYYY-MM-DD`. Defaults to a week after the most recent match |
+| `--date` | Optional, `YYYY-MM-DD`. Defaults to the date these two clubs next meet on the schedule |
 | `--model` | `both` (default), `rf` or `xgb` |
 | `--explain` | Also print the full feature vector behind the prediction |
 
@@ -704,10 +705,25 @@ input.
 
 ### What it refuses
 
-* A team that has not played in that league, listing the closest names.
+* A team that appears in neither the results nor the season's schedule, listing
+  the closest names.
 * A team playing itself.
 * A fixture whose result is already in the data, or a date the data has already
   reached.
+
+A club that is on the schedule but has **not played yet** is not refused. Its
+debut is the fixture most worth being able to ask about, and refusing it because
+the club is new would refuse the prediction the data supports least and is
+needed most. The prediction carries a note saying the club has no matches in the
+data, so its Elo starts at 1500 and its form window is empty, and the model is
+effectively working without that side.
+
+When no date is given, the default is read from the schedule rather than
+invented: the date those two clubs next meet, or the next fixture in the league
+if they are not due to play. A fixed week after the last match was right most
+weeks in midwinter and wrong across every international break, at the end of a
+season, and any time a fixture was moved, which is the worst kind of default:
+usually correct, and silently wrong the rest of the time.
 
 Two clubs having met before is deliberately **not** a reason to refuse. Most
 real fixtures are a repeat of a pairing from the same or a previous season, and
@@ -756,10 +772,20 @@ afterwards, so roughly 2.7s for a single command-line prediction. That is a
 deliberate trade for a codebase with no artifact to go stale, and it is the
 thing to revisit first if this ever needs to be quick.
 
-The model is fitted on **all** seasons, including the one `train.py` holds out
-for validation, because a prediction should use every match available. The
-trade is that the reported validation scores no longer describe this model
-exactly, and no claim is made that they do.
+The model is fitted on every season **before** the validation season, and the
+season being predicted is in neither the fit nor the validation split. A season
+after the validation season is not quietly folded into training: fitting on it
+would train the model on the very matches it is about to predict, and the
+reported scores would stop describing the model being used.
+
+The rolling features and Elo ratings behind a prediction are a separate
+question from the fit. Those are built from every match played so far,
+including the season being predicted, because a result that has already happened
+is real information about how a team is playing. A fixture is only ever a date
+and two clubs, so a fixture that has not been played is dropped before the
+feature and Elo passes: those passes are chronological and would read a row
+with no result as a zero for both sides, spending a slot in every rolling window
+that follows it.
 
 Caveats travel with the prediction rather than being buried here. A team with a
 thin history, a date older than the data, a season boundary and an unmeasured
@@ -776,6 +802,9 @@ Football-Prediction-Model/
 ├── train.py
 ├── predict.py
 ├── update_data.py
+├── backfill_xg.py
+├── sync_understat.py
+├── refresh_data.py
 ├── requirements.txt
 ├── football_data/
 │   ├── LaLiga/
@@ -802,12 +831,14 @@ Football-Prediction-Model/
 | `predict.py`              | Command-line entry point for predicting a single fixture, and the interactive session |
 | `update_data.py`          | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
 | `backfill_xg.py`          | Command-line entry point for writing Understat xG into the season CSVs              |
+| `sync_understat.py`       | Command-line entry point that adds the rest of a season's schedule and fills in results |
+| `refresh_data.py`         | Runs the fixture and xG refresh for every league and reports what is stale           |
 | `requirements.txt`        | Lists the Python dependencies and their tested versions                             |
 | `src/api_football.py`     | Fetches API-Football fixtures and merges them into the local CSVs                   |
 | `src/data_loader.py`      | Loads match data and performs season-based splitting                                |
 | `src/elo.py`              | Calculates football seasons and Elo ratings                                         |
 | `src/features.py`         | Creates rolling form and xG/xGA features                                            |
-| `src/predict.py`          | Fits the models on all seasons and predicts an unplayed fixture                    |
+| `src/predict.py`          | Fits the models on the training seasons and predicts an unplayed fixture            |
 | `src/understat_client.py` | Reads Understat's per-season JSON endpoint                                          |
 | `src/understat_loader.py` | Retrieves and prepares Understat data, one season at a time                          |
 | `src/xg.py`               | Defines the xG columns and the provenance value written with them                    |
@@ -913,6 +944,191 @@ runtime. Everything xG-related is read from the CSVs and topped up in memory.
 The CSVs in `football_data/` are the single source of truth for training. They
 come from Football-Data.co.uk and can be augmented with fixtures from
 API-Football using `update_data.py`.
+
+### A season CSV holds the whole season, played and upcoming
+
+Each season file holds that season's full fixture list, not just the results.
+A fixture that has not been played yet is present with a date and two clubs,
+and blank everywhere else: result, goals, shots and xG. This is what makes the
+season being predicted known in advance, and it is why the whole file is 380
+rows rather than the handful played so far.
+
+Those blank rows are inert. Everything downstream filters on a result being
+present, so an unplayed fixture never reaches the rolling form, the xG columns
+or the Elo pass. `test_a_pending_fixture_in_the_csv_cannot_change_a_prediction`
+holds that line: padding a season file with the rest of the schedule cannot move
+a prediction.
+
+Two consequences for anyone reading the files by hand:
+
+* A blank `FTR` means **not yet played**, not a nil-nil draw. A nil-nil draw has
+  `FTR` of `D`.
+* Row count is no longer a proxy for how much data a season has. The number of
+  played matches is.
+
+### Adding the schedule and filling in results
+
+`sync_understat.py` keeps a season CSV in step with Understat: it adds the
+fixtures still to come, and it writes the results of matches that have since been
+played. Understat lists a full season before kickoff, and publishes a score as
+soon as a match ends, so one script covers both ends of a season's life:
+
+```bash
+python sync_understat.py --league PremierLeague --season 2026/2027
+```
+
+Use `--dry-run` first to see what would change, and `--season` to target a
+specific season. The rules it works by:
+
+* It **only adds or fills blanks**. A cell that already holds a value is left
+  exactly as it is, so every result downloaded from football-data.co.uk is
+  never overwritten. Understat fills the gaps the download has not reached yet,
+  which is why the two sources coexist and neither one has to be re-downloaded.
+* A match the two sources **disagree** on is left alone and reported. The value
+  on file wins, and the difference is printed rather than resolved, because
+  which of them is right is not something a script can decide.
+* A row that already carries a result but is **missing shot counts** is left
+  alone and reported, by the same reasoning: the goals on it came from
+  football-data.co.uk and the shots would come from Understat, and mixing the two
+  inside one match is worse than an honest gap. The all-or-nothing rule below
+  protects the rows this script writes; this is the same corrupt shape arriving
+  by another route, and it is named rather than tolerated.
+* It matches on date, home team and away team, and translates Understat's club
+  names through `TEAM_NAME_MAP` first.
+* It writes only the columns the file already has, so a season that has never
+  been given an xG column does not acquire an empty one.
+* A club the season file has never seen is reported and left out, because two
+  spellings of one club would split its Elo rating and its form in two.
+* A **postponed** fixture has its date rewritten in place rather than added
+  again. A league does play the same pairing more than once in a season, so only
+  rows with no result are eligible to be re-dated; by the time the return leg is
+  listed, the first one has been played and is left alone.
+* A played match the file has never heard of is **added**, decided, with its
+  shots. More often it is a fixture added before kickoff and still sitting there
+  blank.
+
+#### A result is never written without its shots
+
+This is the rule the whole result-filling half turns on. Understat's league
+payload carries goals but not shots; the shot counts live in a separate
+per-match endpoint. So filling a result takes one request per match filled, and
+those requests are spent **only** on matches that are actually being written —
+a season already on file costs none.
+
+If those counts cannot be read, the match is left blank, **score included**. That
+looks like throwing away a result that is sitting right there, and it is
+deliberate: `src/features.py` coerces a missing number to zero on purpose, so a
+row given a score and no shots is not a row with blanks in it. It is a row
+claiming the club managed no shots, the rolling features would sum it happily,
+and the answer would be quietly wrong by about twenty shots with nothing
+anywhere saying so. A blank row is honest and gets dropped; a plausible wrong
+row gets trained on. A 0-0 where neither side recorded a shot is also left
+blank, since that is what an abandoned or unplayed fixture looks like. Real
+0-0 draws have shots in them and are written normally.
+
+Rows this script fills are marked in a `result_source` column, so a fetched
+value is told apart from a downloaded one. Historical rows are left unmarked on
+purpose: a column claiming football-data.co.uk on every row of every season
+would be a column nobody could trust to mean anything.
+
+#### The two sources do not agree exactly, and that is fine
+
+Measured over the 31 played Premier League 2026/2027 matches, comparing what
+Understat reports against the football-data.co.uk CSV already on file:
+
+| Column | Exact | Typical gap |
+| --- | --- | --- |
+| `HS` / `AS` total shots | 59 of 62 sides | 1 |
+| `HST` / `AST` shots on target | 45 of 62 sides | 1 |
+
+Almost every disagreement is a single shot, with one side out by two. The shot
+vocabulary is fully accounted for, so this is two vendors counting the same
+event slightly differently rather than a parse losing a category. Goals
+disagree nowhere at all.
+
+That gap is the reason the precedence rule is "existing values always win" and
+not "Understat is more accurate". It also has a consequence worth stating
+plainly: once a match is filled from Understat, the rolling shot features
+average rows from two vendors, and a five-match form window can contain a ±1
+difference that no amount of care at the boundary would remove. The feature is a
+form signal and not a shot audit, so the noise is well inside its tolerance, but
+it is a real seam in the data and the `result_source` column exists so it can be
+located rather than remembered.
+
+Running it twice changes nothing, which is what makes it safe to put on a
+schedule.
+
+### Keeping the data current
+
+```bash
+python refresh_data.py --dry-run   # report
+python refresh_data.py             # write
+```
+
+This runs both Understat-backed steps for every league, fixtures then xG, and
+prints one table:
+
+```text
+League            Fixtures  Re-dated  Results      xG  Unwritten
+----------------------------------------------------------------
+PremierLeague            0         0        0       0         0
+LaLiga                   0         0        0       0         0
+SerieA                   0         0        0       0         0
+```
+
+`--league` narrows it to one league and `--season` to one season of fixtures.
+The xG step always covers the whole league, since it only fills cells that are
+empty and narrowing it would hide gaps in older seasons.
+
+An **Unwritten** count is the number of played matches the CSV has no result for.
+That is the one figure worth reading, and it is the reason the command exists.
+It is the only place in the project that can say a played match is missing,
+because a fixture added before kickoff sits in the file with a blank result,
+matches on date and sides, and is counted as *already present* by both
+underlying scripts. Nothing else says so. Meanwhile a blank row reads as a match
+that has not happened, so it is dropped from the rolling features and from the
+Elo, and a club's recent form goes stale quietly.
+
+**Results come from Understat too.** A blank result is no longer a chore left
+undone, and the refresh no longer tells you to download anything. Understat
+publishes a score as soon as a match ends, so the file fills itself in now, and
+a non-zero Unwritten count means the refresh could not *finish*: an abandoned or
+unplayed fixture, a match whose shot counts could not be read, or a request that
+did not come back. Each one is listed by name by the fixtures step.
+
+The exit status is non-zero if any league could not be refreshed, and a league
+that fails does not stop the others. Understat publishes no API and no
+availability, so treat a failure as retryable rather than as a broken dataset.
+
+A league that failed shows a **dash** in the Unwritten column rather than a
+zero, because the refresh died before it could count. A dash is not a zero, and
+the run says so instead of reporting the leagues it did manage to check as proof
+that everything is current.
+
+### On a schedule
+
+```bash
+python refresh_data.py --require-fresh
+```
+
+The default exit status catches a league failing, which is the loud failure. It
+does not catch the likelier one: both Understat steps succeed, the tables are
+clean, and one match is still sitting unwritten, so the run is green and the
+model trains on a season that is quietly short a game. `--require-fresh`
+extends the non-zero exit to a non-zero Unwritten count, and to any league whose
+count is unknown.
+
+That makes it the flag to use from cron, since the whole point of a scheduled
+refresh is to fail loudly. Alert on a non-zero status, not on the output:
+
+```cron
+17 7 * * *  cd /path/to/repo && .venv/bin/python refresh_data.py --require-fresh \
+             && .venv/bin/python predict.py --league PremierLeague --home Arsenal --away Leeds
+```
+
+A `--require-fresh` run will start failing the moment a matchday ends and the
+next refresh has not yet run. That is the correct behaviour: it is telling you
+the model is about to be trained on results that are not there yet.
 
 ### How the merge behaves
 

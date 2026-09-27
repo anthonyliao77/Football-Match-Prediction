@@ -18,7 +18,14 @@ from config import (
     FEATURE_COLUMNS,
     LEAGUES,
 )
-from src.data_loader import load_data, split_by_season
+from src.data_loader import (
+    load_data,
+    played_matches,
+    prediction_season,
+    previous_season,
+    split_by_season,
+    unplayed_matches,
+)
 from src.elo import create_elo_features, get_season
 from src.features import create_features
 from src.xg import XG_COLUMNS
@@ -44,7 +51,11 @@ def _xg_coverage_by_season(dataframe) -> pd.DataFrame:
     )
 
 
-def _warn_on_missing_xg(dataframe, league: str) -> None:
+def _warn_on_missing_xg(
+    dataframe: pd.DataFrame,
+    league: str,
+    validation_season: str
+) -> None:
     """
     Reports the xG the run is about to do without.
 
@@ -55,7 +66,8 @@ def _warn_on_missing_xg(dataframe, league: str) -> None:
 
     Parameters:
         dataframe: DataFrame containing match data with xG columns.
-        league (str): The league name, for the suggested command.
+        league: The league name, for the suggested command.
+        validation_season: The season the reported scores are computed on.
     """
     coverage = _xg_coverage_by_season(dataframe)
 
@@ -65,18 +77,21 @@ def _warn_on_missing_xg(dataframe, league: str) -> None:
         f"xG coverage: {measured} of {len(dataframe)} rows carry measured xG"
     )
 
-    # split_by_season holds out the most recent season, so that is the one the
-    # reported scores are computed on.
-    newest = coverage.index[-1]
-    gaps = int(coverage.loc[newest, "gaps"])
-    rows = int(coverage.loc[newest, "rows"])
+    # The scores are reported on the validation season, so that is the season
+    # whose missing xG would make them pessimistic.
+    if validation_season not in coverage.index:
+        return
+
+    gaps = int(coverage.loc[validation_season, "gaps"])
+    rows = int(coverage.loc[validation_season, "rows"])
 
     if not gaps:
         return
 
     print(
         f"\n{'!' * 72}\n"
-        f"WARNING: {gaps} of {rows} rows in {newest} have no measured xG.\n"
+        f"WARNING: {gaps} of {rows} rows in {validation_season} have no "
+        f"measured xG.\n"
         f"Understat has not published that season, so HomeXG5, AwayXG5,\n"
         f"HomeXGA5 and AwayXGA5 will read 0 for every row of the validation\n"
         f"set. The scores below are therefore pessimistic, and the cause will\n"
@@ -112,18 +127,43 @@ def train_model(league):
         league=league_config["football_data"]
     )
 
+    # The season under prediction is the newest one in the data, and the
+    # season validated on is the one before it. Both are decided before the
+    # features are built so the xG coverage report names the season the scores
+    # are actually reported on.
+    target_season = prediction_season(dataframe)
+    validation_season = previous_season(target_season)
+
+    # Fixtures that have not been played yet carry no result, and the feature
+    # and Elo passes would read such a row as a zero for both sides. They are
+    # dropped here so a fixture awaiting kickoff cannot reach a rolling window.
+    pending = len(unplayed_matches(dataframe))
+    dataframe = played_matches(dataframe)
+
+    if pending:
+        print(
+            f"Season schedule: {pending} fixtures not yet played are held out "
+            f"of training and validation"
+        )
+
+    print(
+        f"Season boundary: training up to {previous_season(validation_season)},"
+        f" validating on {validation_season}, predicting {target_season}"
+    )
+
     # Checked before the features are built, because create_features returns a
     # fresh frame and does not carry the xG columns through.
-    _warn_on_missing_xg(dataframe, league)
+    _warn_on_missing_xg(dataframe, league, validation_season)
 
     # Create features for the model using the combined match data
     dataframe = create_features(dataframe=dataframe)
     dataframe = create_elo_features(dataframe=dataframe)
 
-    # Split the data into training and validation sets based on date ranges
+    # Split the data into training and validation sets based on date ranges.
+    # The prediction season is in neither half.
     train_data, validation_data = split_by_season(
         dataframe,
-        validation_seasons=1
+        validation_season=validation_season
     )
 
     # training data

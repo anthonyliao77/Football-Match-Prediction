@@ -10,6 +10,7 @@ from src.understat_client import (
     UnderstatUnavailable,
     _parse,
     get_league_season,
+    get_match_shots,
 )
 
 
@@ -261,3 +262,151 @@ def test_get_league_season_rejects_a_non_json_body(monkeypatch):
 
     with pytest.raises(UnderstatUnavailable, match="did not return JSON"):
         get_league_season("EPL", "2026/2027")
+
+
+def shot_event(result, side="h"):
+    """One shot from the per-match endpoint."""
+    return {
+        "id": "1",
+        "result": result,
+        "h_a": side,
+        "xG": "0.05",
+    }
+
+
+def match_payload(home, away):
+    """A per-match response in the shape the endpoint returns."""
+    return {"shots": {"h": home, "a": away}, "rosters": {}, "tmpl": {}}
+
+
+def test_get_match_shots_counts_total_shots(monkeypatch):
+    install_session(monkeypatch, [FakeResponse(match_payload(
+        [shot_event("Goal"), shot_event("BlockedShot"), shot_event("MissedShots")],
+        [shot_event("SavedShot", "a")],
+    ))])
+
+    counts = get_match_shots("42")
+
+    assert counts["home_shots"] == 3
+    assert counts["away_shots"] == 1
+    assert counts["home_on_target"] == 1
+    assert counts["away_on_target"] == 1
+
+
+def test_a_shot_off_the_woodwork_counts_as_on_target(monkeypatch):
+    """The endpoint spells it ShotOnPost, and Post counts for nothing.
+
+    Getting the token wrong undercounts by one on every match with a shot off
+    the woodwork, which is a small silent error rather than a loud one."""
+    install_session(monkeypatch, [FakeResponse(match_payload(
+        [shot_event("Goal"), shot_event("ShotOnPost")],
+        [],
+    ))])
+
+    counts = get_match_shots("42")
+
+    assert counts["home_shots"] == 2
+    assert counts["home_on_target"] == 2
+
+
+def test_a_blocked_shot_is_not_on_target(monkeypatch):
+    install_session(monkeypatch, [FakeResponse(match_payload(
+        [shot_event("BlockedShot"), shot_event("MissedShots")],
+        [],
+    ))])
+
+    counts = get_match_shots("42")
+
+    assert counts["home_on_target"] == 0
+
+
+def test_get_match_shots_asks_for_the_per_match_endpoint(monkeypatch):
+    session = install_session(monkeypatch, [FakeResponse(
+        match_payload([], [])
+    )])
+
+    get_match_shots("42")
+
+    assert session.requested == ["https://understat.com/getMatchData/42"]
+
+
+def test_a_response_with_no_shots_key_is_refused(monkeypatch):
+    """A missing key is an endpoint that changed shape, not a match with no
+    shots. Counting it as zero would write a made-up 0-0 into a real match."""
+    install_session(monkeypatch, [FakeResponse({"rosters": {}})])
+
+    with pytest.raises(UnderstatUnavailable, match="no shots key"):
+        get_match_shots("42")
+
+
+def test_a_goalless_match_really_can_have_no_shots(monkeypatch):
+    """An empty list is a real answer and must not be refused.
+
+    The distinction from the test above is the whole point: an empty list is a
+    match nobody had a shot in, and it is the one input that has to survive."""
+    install_session(monkeypatch, [FakeResponse(
+        match_payload([], [])
+    )])
+
+    counts = get_match_shots("42")
+
+    assert counts == {
+        "home_shots": 0,
+        "away_shots": 0,
+        "home_on_target": 0,
+        "away_on_target": 0,
+    }
+
+
+def test_the_two_league_readers_ask_the_endpoint_once_each(monkeypatch):
+    """Both readers used to fetch the same URL for the same answer.
+
+    get_league_season wanted the played matches and get_league_fixtures wanted
+    the whole season, and those differ by which rows you keep rather than by
+    which request you make, so every refresh was paying for the same payload
+    twice per league season."""
+    from src.understat_client import get_league_fixtures
+
+    season = [played_match("2026-08-21"), future_match("2026-08-30")]
+
+    session = install_session(monkeypatch, [FakeResponse({"dates": season})])
+
+    get_league_season("EPL", "2026/2027")
+
+    assert session.requested == ["https://understat.com/getLeagueData/EPL/2026"]
+
+    session = install_session(monkeypatch, [FakeResponse({"dates": season})])
+
+    get_league_fixtures("EPL", "2026/2027")
+
+    assert session.requested == ["https://understat.com/getLeagueData/EPL/2026"]
+
+
+def test_the_fixture_list_carries_the_id_the_shot_reader_needs(monkeypatch):
+    """Understat's id is the only handle its per-match endpoint takes."""
+    from src.understat_client import get_league_fixtures
+
+    install_session(monkeypatch, [FakeResponse(
+        {"dates": [played_match("2026-08-21"), future_match("2026-08-30")]}
+    )])
+
+    fixtures = get_league_fixtures("EPL", "2026/2027")
+
+    assert fixtures["understat_id"].tolist() == ["1", "2"]
+
+
+def test_a_fixture_with_no_id_reads_as_missing(monkeypatch):
+    """A missing id is a gap in the response, not the empty string.
+
+    The string would be truthy, and an empty id sent to the per-match endpoint
+    would come back as whatever that path happens to serve."""
+    from src.understat_client import get_league_fixtures
+
+    match = played_match("2026-08-21")
+    del match["id"]
+
+    install_session(monkeypatch, [FakeResponse({"dates": [match]})])
+
+    fixtures = get_league_fixtures("EPL", "2026/2027")
+
+    assert pd.isna(fixtures["understat_id"].iloc[0])

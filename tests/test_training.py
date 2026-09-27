@@ -81,14 +81,14 @@ def test_coverage_treats_one_missing_side_as_a_gap():
     assert coverage.loc["2024/2025", "gaps"] == 1
 
 
-def test_no_warning_when_the_newest_season_is_covered(capsys):
-    """A complete season produces one coverage line and no alarm."""
+def test_no_warning_when_the_validation_season_is_covered(capsys):
+    """A covered validation season produces one coverage line and no alarm."""
     frame = build_seasons(
         covered=("2024/2025", "2025/2026"),
         gap=(),
     )
 
-    _warn_on_missing_xg(frame, "PremierLeague")
+    _warn_on_missing_xg(frame, "PremierLeague", "2025/2026")
 
     output = capsys.readouterr().out
 
@@ -96,26 +96,44 @@ def test_no_warning_when_the_newest_season_is_covered(capsys):
     assert "WARNING" not in output
 
 
-def test_warning_fires_for_an_uncovered_current_season(capsys):
-    """The season being validated on is the one that has to be covered."""
+def test_warning_fires_for_an_uncovered_validation_season(capsys):
+    """The season being validated on is the one that has to be covered.
+
+    The newest season is the one being predicted and is never scored, so a gap
+    in it is not what the reported numbers depend on.
+    """
     frame = build_seasons(
         covered=("2024/2025",),
         gap=("2025/2026", "2026/2027"),
     )
 
-    _warn_on_missing_xg(frame, "PremierLeague")
+    _warn_on_missing_xg(frame, "PremierLeague", "2025/2026")
 
     output = capsys.readouterr().out
 
     assert "WARNING" in output
-    assert "12 of 12 rows in 2026/2027 have no measured xG" in output
+    assert "12 of 12 rows in 2025/2026 have no measured xG" in output
+
+
+def test_warning_ignores_a_gap_in_the_season_being_predicted(capsys):
+    """The season under prediction is not scored, so its xG is not critical."""
+    frame = build_seasons(
+        covered=("2024/2025", "2025/2026"),
+        gap=("2026/2027",),
+    )
+
+    _warn_on_missing_xg(frame, "PremierLeague", "2025/2026")
+
+    output = capsys.readouterr().out
+
+    assert "WARNING" not in output
 
 
 def test_warning_names_the_four_features_and_the_fix(capsys):
     """The message has to say what is wrong and what to run about it."""
-    frame = build_seasons(covered=("2024/2025",), gap=("2026/2027",))
+    frame = build_seasons(covered=("2024/2025",), gap=("2025/2026",))
 
-    _warn_on_missing_xg(frame, "SerieA")
+    _warn_on_missing_xg(frame, "SerieA", "2025/2026")
 
     output = capsys.readouterr().out
 
@@ -132,7 +150,7 @@ def test_warning_does_not_fire_for_an_older_gap(capsys):
         gap=("2025/2026",),
     )
 
-    _warn_on_missing_xg(frame, "PremierLeague")
+    _warn_on_missing_xg(frame, "PremierLeague", "2024/2025")
 
     output = capsys.readouterr().out
 
