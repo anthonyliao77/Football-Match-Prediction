@@ -1038,6 +1038,36 @@ The exit status is non-zero if any league could not be refreshed, and a league
 that fails does not stop the others. Understat publishes no API and no
 availability, so treat a failure as retryable rather than as a broken dataset.
 
+A league that failed shows a **dash** in the Stale column rather than a zero,
+because the refresh died before it could count. A dash is not a zero, and the
+run says so instead of reporting the leagues it did manage to check as proof
+that everything is current.
+
+### On a schedule
+
+```bash
+python refresh_data.py --require-fresh
+```
+
+The default exit status catches a league failing, which is the loud failure. It
+does not catch the likelier one: both Understat steps succeed, the tables are
+clean, and the results download is a fortnight old, so the run is green and the
+model trains on a month-old season. `--require-fresh` extends the non-zero exit
+to a non-zero Stale count, and to any league whose Stale count is unknown.
+
+That makes it the flag to use from cron, since the whole point of a scheduled
+refresh is to fail loudly. Alert on a non-zero status, not on the output:
+
+```cron
+17 7 * * *  cd /path/to/repo && .venv/bin/python refresh_data.py --require-fresh \
+             && .venv/bin/python predict.py --league PremierLeague --home Arsenal --away Leeds
+```
+
+Note the results download is still a manual step, so a `--require-fresh` run
+will start failing the moment a matchday passes and the file is not replaced.
+That is the correct behaviour: it is telling you the model is about to be
+trained on results that are not there yet.
+
 ### How the merge behaves
 
 API rows are matched to existing CSV rows on **date, home team and away team**:
