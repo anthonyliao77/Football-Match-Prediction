@@ -1130,6 +1130,47 @@ A `--require-fresh` run will start failing the moment a matchday ends and the
 next refresh has not yet run. That is the correct behaviour: it is telling you
 the model is about to be trained on results that are not there yet.
 
+### A check on a schedule needs a grace period
+
+The run above is the right guard before a **prediction**, where the CSV is about
+to be read and every unwritten match is a match the model will be missing. It is
+the wrong guard for a monitor that runs on a timer, for a reason that has nothing
+to do with correctness: committed data goes stale after every matchday and only
+becomes current when someone refreshes and commits it. Asked daily, a strict
+check is red most of the time, and a red check people have learned to ignore is
+worse than no check.
+
+`--max-age-days N` narrows the failure to a match that has been sitting
+unwritten for more than N days:
+
+```bash
+python refresh_data.py --dry-run --require-fresh --max-age-days 7
+```
+
+A match blank since this morning is one nobody has got to yet. One blank for
+three weeks is a fault nobody has looked at. The table shows both counts, so a
+clean exit next to a non-zero Unwritten is visible rather than confusing:
+
+```text
+League            Fixtures  Re-dated  Results      xG  Unwritten  Overdue
+----------------------------------------------------------------
+PremierLeague            0         0        0       0          3        2
+```
+
+Two things it does not excuse. Without the flag the behaviour is exactly as it
+was, since `0` would mean "older than today" and would quietly stop counting a
+match played a few hours ago. And a league that *failed* still fails either way,
+because a league nobody could count is not a young match — the threshold filters
+match ages, and it cannot turn unknown into fine.
+
+Ages are measured against UTC, so a local run and a scheduled one agree about
+what "three days old" means.
+
+`.github/workflows/data-freshness.yaml` runs exactly that command, read-only. It
+is manual-only (`workflow_dispatch`) until the runner's reachability of
+Understat has been confirmed, since that is the one thing about running it off
+this machine that cannot be checked from this machine.
+
 ### How the merge behaves
 
 API rows are matched to existing CSV rows on **date, home team and away team**:

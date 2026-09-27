@@ -1,0 +1,46 @@
+name: Data freshness
+
+on:
+  workflow_dispatch:
+
+# Read-only on purpose. This is a check, not a writer: the refresh it runs is
+# always a dry run, so a compromised dependency in requirements.txt has no path
+# to the repository. Nothing here can write a CSV or push a commit.
+permissions:
+  contents: read
+
+concurrency:
+  group: data-freshness
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    # Not the six-hour default. The script's own request timeout is 30 seconds
+    # and it has three leagues to read, so anything past a few minutes means
+    # Understat is hanging rather than being slow, and there is no value in
+    # sitting on the runner.
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.7"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check every played match has a result
+        run: |
+          python refresh_data.py \
+            --dry-run \
+            --require-fresh \
+            --max-age-days 7 \
+            --league all
