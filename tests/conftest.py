@@ -14,7 +14,7 @@ from factories import build_rows, trained_predictor
 @pytest.fixture
 def league_dir(tmp_path, monkeypatch):
     """
-    Builds a one-season PremierLeague directory in a temporary location.
+    Builds a multi-season PremierLeague directory in a temporary location.
 
     The predictor resolves its paths relative to the working directory, so the
     tests chdir rather than patch the config, which keeps the real path logic

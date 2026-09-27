@@ -157,6 +157,49 @@ def load_data(league: str) -> pd.DataFrame:
     return dataframe
 
 
+def played_matches(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns the matches that have actually been played.
+
+    A fixture that has not been played yet is kept in the CSVs so the season
+    schedule is complete, but it must never reach the feature or Elo passes.
+    Those passes are chronological, so a fixture with no result is not inert: it
+    is read as a zero for both sides, which src/features.py's calculate_points
+    and src/elo.py's get_match_result both return for a result they do not
+    recognise, and as a set of blanks elsewhere, which _number turns into 0.0.
+    The rolling features are sums over each team's previous matches, so one such
+    row spends a slot in every subsequent window with a phantom scoreless draw
+    in it, and the ratings drift down from there. Nothing raises, so the damage
+    is only visible as quietly worse features.
+
+    Parameters:
+        dataframe (pd.DataFrame): A DataFrame of matches.
+
+    Returns:
+        pd.DataFrame: The rows carrying a final result, in the order given.
+    """
+    if "FTR" not in dataframe.columns:
+        return dataframe
+
+    return dataframe[dataframe["FTR"].notna()]
+
+
+def unplayed_matches(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns the fixtures that have not been played yet.
+
+    Parameters:
+        dataframe (pd.DataFrame): A DataFrame of matches.
+
+    Returns:
+        pd.DataFrame: The rows with no final result, in the order given.
+    """
+    if "FTR" not in dataframe.columns:
+        return dataframe.iloc[0:0]
+
+    return dataframe[dataframe["FTR"].isna()]
+
+
 def get_season_range(dataframe: pd.DataFrame) -> tuple[int, int]:
     """
     Determines the first and last season present in a dataframe.
@@ -184,37 +227,103 @@ def get_season_range(dataframe: pd.DataFrame) -> tuple[int, int]:
     return start_year, end_year
 
 
+def previous_season(season: str) -> str:
+    """
+    Returns the season immediately before the given one.
+
+    Parameters:
+        season (str): A season label in the form "YYYY/YYYY+1".
+
+    Returns:
+        str: The preceding season, also in the form "YYYY/YYYY+1"
+        (e.g. "2025/2026" for "2026/2027").
+    """
+    start_year = int(season.split("/")[0])
+
+    return f"{start_year - 1}/{start_year}"
+
+
+def prediction_season(dataframe: pd.DataFrame) -> str:
+    """
+    Returns the newest season present in a dataframe.
+
+    That season is the one being predicted. It is in progress, so it is the
+    season whose matches are still arriving, and it is deliberately held out of
+    both the training and the validation split.
+
+    Parameters:
+        dataframe (pd.DataFrame): A DataFrame containing a Date column.
+
+    Returns:
+        str: The newest season label present.
+    """
+    return max(get_season(date) for date in dataframe["Date"])
+
+
 def split_by_season(
     dataframe: pd.DataFrame,
-    validation_seasons: int = 1
+    validation_season: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Splits match data chronologically by football season.
 
+    The newest season in the data is the one being predicted, so it is left out
+    of both halves of the split. The season before it becomes the validation
+    season, and every earlier season is training data. The default therefore
+    trains on the past, validates on the last complete season, and never fits
+    the season under prediction.
+
+    A season after the validation season is not quietly folded into training.
+    If one were, the model would be fitted on the very matches it is about to
+    predict, and the reported scores would stop describing the model being used.
+
     Parameters:
         dataframe: DataFrame containing match data.
-        validation_seasons: Number of complete seasons used for validation.
+        validation_season: The season label to validate on, e.g. "2025/2026".
+            Defaults to the season before the newest one present.
 
     Returns:
         Tuple containing training and validation DataFrames.
+
+    Raises:
+        ValueError: If validation_season is not present in the data.
     """
     dataframe = dataframe.sort_values("Date").reset_index(drop=True)
 
     dataframe["Season"] = dataframe["Date"].apply(get_season)
 
-    seasons = dataframe["Season"].unique()
+    seasons = sorted(set(dataframe["Season"]))
 
-    split_index = len(seasons) - validation_seasons
+    if validation_season is None:
+        if len(seasons) < 2:
+            raise ValueError(
+                "Need at least two seasons to split on: the newest is the "
+                f"season being predicted and the one before it is the "
+                f"validation season, but the data holds only {seasons}."
+            )
 
-    training_seasons = seasons[:split_index]
-    validation_seasons_list = seasons[split_index:]
+        validation_season = previous_season(seasons[-1])
+
+    if validation_season not in seasons:
+        raise ValueError(
+            f"Validation season {validation_season!r} is not present in the "
+            f"data, which holds {seasons}. A validation season that is absent "
+            f"would leave the model fitted and scored on nothing."
+        )
+
+    boundary = int(validation_season.split("/")[0])
+
+    training_seasons = [
+        season for season in seasons
+        if int(season.split("/")[0]) < boundary
+    ]
 
     train_data = dataframe[
         dataframe["Season"].isin(training_seasons)
     ].copy()
 
     validation_data = dataframe[
-        dataframe["Season"].isin(validation_seasons_list)
+        dataframe["Season"] == validation_season
     ].copy()
 
     return train_data, validation_data

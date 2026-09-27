@@ -187,14 +187,14 @@ def test_load_data_resets_index(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "validation_seasons, expected_train, expected_validation",
+    "validation_season, expected_train, expected_validation",
     [
-        (1, ["2022/2023", "2023/2024"], ["2024/2025"]),
-        (2, ["2022/2023"], ["2023/2024", "2024/2025"]),
+        ("2024/2025", ["2022/2023", "2023/2024"], ["2024/2025"]),
+        ("2023/2024", ["2022/2023"], ["2023/2024"]),
     ],
 )
 def test_split_by_season(
-    validation_seasons,
+    validation_season,
     expected_train,
     expected_validation,
 ):
@@ -218,11 +218,118 @@ def test_split_by_season(
 
     train_data, validation_data = data_loader.split_by_season(
         dataframe,
-        validation_seasons=validation_seasons,
+        validation_season=validation_season,
     )
 
     assert train_data["Season"].unique().tolist() == expected_train
     assert validation_data["Season"].unique().tolist() == expected_validation
+
+
+def test_split_by_season_defaults_to_the_season_before_the_newest():
+    """The newest season is the one being predicted, so it is not validated on.
+
+    With nothing passed, the season before the newest becomes the validation
+    season and every earlier season is training data.
+    """
+
+    dataframe = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(
+                [
+                    "2022-08-01",
+                    "2023-08-01",
+                    "2024-08-01",
+                    "2025-08-01",
+                ]
+            ),
+        }
+    )
+
+    train_data, validation_data = data_loader.split_by_season(dataframe)
+
+    assert train_data["Season"].unique().tolist() == ["2022/2023", "2023/2024"]
+    assert validation_data["Season"].unique().tolist() == ["2024/2025"]
+
+
+def test_split_by_season_leaves_the_season_under_prediction_in_neither_half():
+    """The season being predicted is not folded into training.
+
+    Fitting on it would train the model on the very matches it is about to
+    predict, so the newest season has to be absent from both halves.
+    """
+
+    dataframe = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(
+                [
+                    "2023-08-01",
+                    "2024-08-01",
+                    "2025-08-01",
+                ]
+            ),
+        }
+    )
+
+    train_data, validation_data = data_loader.split_by_season(dataframe)
+
+    assert "2025/2026" not in train_data["Season"].unique().tolist()
+    assert "2025/2026" not in validation_data["Season"].unique().tolist()
+
+
+def test_split_by_season_rejects_a_validation_season_that_is_absent():
+    """An absent validation season is named rather than silently accepted.
+
+    Validating on a season the data does not hold would score the model on
+    nothing, which reads as a pass rather than a failure.
+    """
+
+    dataframe = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2023-08-01", "2024-08-01"]),
+        }
+    )
+
+    with pytest.raises(ValueError, match="2019/2020"):
+        data_loader.split_by_season(dataframe, validation_season="2019/2020")
+
+
+def test_split_by_season_rejects_a_single_season():
+    """One season leaves no training data and no validation season."""
+
+    dataframe = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2024-08-01"]),
+        }
+    )
+
+    with pytest.raises(ValueError, match="at least two seasons"):
+        data_loader.split_by_season(dataframe)
+
+
+def test_previous_season_steps_back_one_year():
+    """A season label maps to the one before it."""
+
+    assert data_loader.previous_season("2026/2027") == "2025/2026"
+    assert data_loader.previous_season("2020/2021") == "2019/2020"
+
+
+def test_played_matches_drops_fixtures_with_no_result():
+    """A fixture awaiting kickoff is not a match to learn from.
+
+    The feature and Elo passes read a row with no result as a zero for both
+    sides, so leaving one in would spend a slot in every rolling window that
+    follows it.
+    """
+
+    dataframe = pd.DataFrame(
+        {
+            "FTR": ["H", None, "A", None],
+            "FTHG": [2, None, 0, None],
+        }
+    )
+
+    assert data_loader.played_matches(dataframe)["FTR"].tolist() == ["H", "A"]
+    assert len(data_loader.unplayed_matches(dataframe)) == 2
 
 
 def test_split_by_season_sorts_data():
@@ -244,11 +351,11 @@ def test_split_by_season_sorts_data():
 
     train_data, validation_data = data_loader.split_by_season(
         dataframe,
-        validation_seasons=1,
+        validation_season="2023/2024",
     )
 
     assert train_data.iloc[0]["Date"] == pd.Timestamp("2022-08-01")
-    assert validation_data.iloc[0]["Date"] == pd.Timestamp("2024-08-01")
+    assert validation_data.iloc[0]["Date"] == pd.Timestamp("2023-08-01")
 
 
 def test_split_by_season_adds_season_column():
@@ -259,17 +366,13 @@ def test_split_by_season_adds_season_column():
             "Date": pd.to_datetime(
                 [
                     "2022-08-01",
-                    "2023-01-01",
                     "2023-08-01",
                 ]
             ),
         }
     )
 
-    train_data, validation_data = data_loader.split_by_season(
-        dataframe,
-        validation_seasons=1,
-    )
+    train_data, validation_data = data_loader.split_by_season(dataframe)
 
     assert "Season" in train_data.columns
     assert "Season" in validation_data.columns
@@ -282,28 +385,26 @@ def test_split_by_season_preserves_match_data():
         {
             "Date": pd.to_datetime(
                 [
+                    "2021-08-01",
                     "2022-08-01",
                     "2023-08-01",
                 ]
             ),
-            "HomeTeam": ["Team A", "Team B"],
-            "AwayTeam": ["Team B", "Team C"],
-            "FTHG": [2, 1],
-            "FTAG": [1, 0],
-            "FTR": ["H", "H"],
+            "HomeTeam": ["Team A", "Team B", "Team C"],
+            "AwayTeam": ["Team B", "Team C", "Team D"],
+            "FTHG": [3, 2, 1],
+            "FTAG": [1, 1, 0],
+            "FTR": ["H", "H", "H"],
         }
     )
 
-    train_data, validation_data = data_loader.split_by_season(
-        dataframe,
-        validation_seasons=1,
-    )
+    train_data, validation_data = data_loader.split_by_season(dataframe)
 
     assert train_data.iloc[0]["HomeTeam"] == "Team A"
-    assert train_data.iloc[0]["FTHG"] == 2
+    assert train_data.iloc[0]["FTHG"] == 3
 
     assert validation_data.iloc[0]["HomeTeam"] == "Team B"
-    assert validation_data.iloc[0]["FTHG"] == 1
+    assert validation_data.iloc[0]["FTHG"] == 2
 
 
 def test_write_csv_atomic_writes_the_frame(tmp_path):
