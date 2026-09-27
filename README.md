@@ -666,7 +666,7 @@ Data through 2026-09-14 (2320 matches, 30 teams)
 | --- | --- |
 | `--league` | Required. `PremierLeague`, `LaLiga` or `SerieA` |
 | `--home` / `--away` | Required. Team names as the season CSVs spell them |
-| `--date` | Optional, `YYYY-MM-DD`. Defaults to a week after the most recent match |
+| `--date` | Optional, `YYYY-MM-DD`. Defaults to the date these two clubs next meet on the schedule |
 | `--model` | `both` (default), `rf` or `xgb` |
 | `--explain` | Also print the full feature vector behind the prediction |
 
@@ -705,10 +705,25 @@ input.
 
 ### What it refuses
 
-* A team that has not played in that league, listing the closest names.
+* A team that appears in neither the results nor the season's schedule, listing
+  the closest names.
 * A team playing itself.
 * A fixture whose result is already in the data, or a date the data has already
   reached.
+
+A club that is on the schedule but has **not played yet** is not refused. Its
+debut is the fixture most worth being able to ask about, and refusing it because
+the club is new would refuse the prediction the data supports least and is
+needed most. The prediction carries a note saying the club has no matches in the
+data, so its Elo starts at 1500 and its form window is empty, and the model is
+effectively working without that side.
+
+When no date is given, the default is read from the schedule rather than
+invented: the date those two clubs next meet, or the next fixture in the league
+if they are not due to play. A fixed week after the last match was right most
+weeks in midwinter and wrong across every international break, at the end of a
+season, and any time a fixture was moved, which is the worst kind of default:
+usually correct, and silently wrong the rest of the time.
 
 Two clubs having met before is deliberately **not** a reason to refuse. Most
 real fixtures are a repeat of a pairing from the same or a previous season, and
