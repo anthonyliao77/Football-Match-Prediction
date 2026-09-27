@@ -11,7 +11,6 @@ import pandas as pd
 
 from src.elo import get_season
 
-
 DEFAULT_LINE_TERMINATOR = "\n"
 
 
