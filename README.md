@@ -41,6 +41,9 @@ The project follows a chronological football prediction pipeline:
 * [x] Accuracy evaluation
 * [x] Log loss evaluation
 * [x] Multiclass Brier score evaluation
+* [x] Fixture prediction command line
+* [x] Interactive prediction session
+* [x] Elo and form context alongside the predicted probabilities
 
 ### Planned
 
@@ -632,12 +635,146 @@ The current project predicts **match outcomes**, not final scorelines.
 
 ---
 
+## Predicting a Fixture
+
+`train.py` reports how the models did on a season they had not seen.
+`predict.py` uses them on a fixture that has not been played yet.
+
+### One fixture from the command line
+
+```bash
+python predict.py --league PremierLeague --home Arsenal --away Chelsea \
+    --date 2026-12-06
+```
+
+```text
+PremierLeague - Arsenal v Chelsea, Sun 06 Dec 2026
+Data through 2026-09-14 (2320 matches, 30 teams)
+
+  Random Forest  Home  63%  Draw  16%  Away  20%   ->  HOME
+  XGBoost        Home  56%  Draw  20%  Away  24%   ->  HOME
+
+  Elo               1713  vs     1535     (home advantage +100)
+  Elo expectancy    0.83  vs     0.17     (ratings only, no draw model)
+  Form, last 5   Arsenal           15   10.00    2.00   12.08
+  Form, last 5   Chelsea             7   11.00   11.00    8.98
+                    pts  scored  conceded      xG
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--league` | Required. `PremierLeague`, `LaLiga` or `SerieA` |
+| `--home` / `--away` | Required. Team names as the season CSVs spell them |
+| `--date` | Optional, `YYYY-MM-DD`. Defaults to a week after the most recent match |
+| `--model` | `both` (default), `rf` or `xgb` |
+| `--explain` | Also print the full feature vector behind the prediction |
+
+Team and league names are matched loosely, so `epl`, `Serie A` and `  arsenal `
+all work. A name that cannot be resolved is refused with the closest spellings
+in the data rather than guessed at.
+
+Both models are shown side by side by default because they disagree often
+enough to be worth seeing. When they do, that disagreement is information, and
+collapsing it to one number would hide it.
+
+### A session
+
+With no arguments it asks for fixtures one at a time:
+
+```bash
+python predict.py
+```
+
+```text
+Predict an unplayed fixture. Enter 'quit' at any prompt to stop.
+
+League (PremierLeague / LaLiga / SerieA):
+Loading PremierLeague and training... done.
+Home team:
+Away team:
+Date (YYYY-MM-DD, blank for 2026-09-21):
+```
+
+A league is asked for every fixture, so a session can move between leagues. Its
+models are built the first time that league is asked for and then kept, so
+staying in one league pays for the training once.
+
+`quit`, `exit` or `q` stops the session from any prompt, as does the end of the
+input.
+
+### What it refuses
+
+* A team that has not played in that league, listing the closest names.
+* A team playing itself.
+* A fixture whose result is already in the data, or a date the data has already
+  reached.
+
+Two clubs having met before is deliberately **not** a reason to refuse. Most
+real fixtures are a repeat of a pairing from the same or a previous season, and
+refusing those would rule out most of what anyone would want to ask about.
+
+### Why the numbers can be trusted
+
+The hard part is not fitting a model but making sure the feature vector a
+prediction is scored against is the one the model was fitted on. Recomputing
+features for a fixture by hand is where this normally goes wrong, so nothing is
+recomputed.
+
+Instead the fixture is appended to the data as a synthetic row with its result,
+score and xG left empty, and the ordinary `create_features` and
+`create_elo_features` pass runs over the result. The synthetic row's own features
+are then read back by position.
+
+```text
+Real matches ──► append one synthetic row ──► the normal feature pass
+                                                      │
+                                     read that row's features by position
+```
+
+That is the same code path training uses, so the two cannot drift apart. The
+rolling statistics naturally read the five matches before the fixture, and the
+Elo rating is whatever it was immediately before kickoff, with new-season
+regression applied if the date crosses the July boundary.
+
+The test suite checks this directly: one match is deleted from the data, asked
+for by name, and every one of its twenty features is asserted equal to the
+vector the training pipeline produced for that row while it was still there. The
+row is then also checked not to be the last row in the frame, because taking the
+last row would be the natural shortcut and would return a different match's
+features.
+
+The result, score and xG columns are left empty rather than filled with zero on
+purpose. A placeholder `0-0` would be indistinguishable from a real goalless
+draw if the row's position ever shifted.
+
+### Cost and honesty about it
+
+There is no saved model. Every run loads the CSVs, rebuilds the features and
+Elo ratings, and refits both classifiers on every season. Measured on the
+Premier League data, that is about 1.8s to fit and about 0.5s per fixture
+afterwards, so roughly 2.7s for a single command-line prediction. That is a
+deliberate trade for a codebase with no artifact to go stale, and it is the
+thing to revisit first if this ever needs to be quick.
+
+The model is fitted on **all** seasons, including the one `train.py` holds out
+for validation, because a prediction should use every match available. The
+trade is that the reported validation scores no longer describe this model
+exactly, and no claim is made that they do.
+
+Caveats travel with the prediction rather than being buried here. A team with a
+thin history, a date older than the data, a season boundary and an unmeasured
+xG window are each reported in the output, because a probability printed
+without them invites reading more into it than it can carry.
+
+---
+
 ## Project Structure
 
 ```text
 Football-Prediction-Model/
 ├── config.py
 ├── train.py
+├── predict.py
 ├── update_data.py
 ├── requirements.txt
 ├── football_data/
@@ -649,6 +786,7 @@ Football-Prediction-Model/
 │   ├── data_loader.py
 │   ├── elo.py
 │   ├── features.py
+│   ├── predict.py
 │   ├── training.py
 │   └── understat_loader.py
 ├── .gitignore
@@ -661,6 +799,7 @@ Football-Prediction-Model/
 | ------------------------- | ----------------------------------------------------------------------------------- |
 | `config.py`               | Configuration, league settings, team-name mappings, and model feature configuration |
 | `train.py`                | Main command-line entry point for training                                          |
+| `predict.py`              | Command-line entry point for predicting a single fixture, and the interactive session |
 | `update_data.py`          | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
 | `backfill_xg.py`          | Command-line entry point for writing Understat xG into the season CSVs              |
 | `requirements.txt`        | Lists the Python dependencies and their tested versions                             |
@@ -668,11 +807,13 @@ Football-Prediction-Model/
 | `src/data_loader.py`      | Loads match data and performs season-based splitting                                |
 | `src/elo.py`              | Calculates football seasons and Elo ratings                                         |
 | `src/features.py`         | Creates rolling form and xG/xGA features                                            |
+| `src/predict.py`          | Fits the models on all seasons and predicts an unplayed fixture                    |
 | `src/understat_client.py` | Reads Understat's per-season JSON endpoint                                          |
 | `src/understat_loader.py` | Retrieves and prepares Understat data, one season at a time                          |
 | `src/xg.py`               | Defines the xG columns and the provenance value written with them                    |
 | `src/training.py`         | Handles feature engineering, model training, prediction, and evaluation             |
 | `tests/`                  | Test suite, run with `python -m pytest`                                             |
+| `tests/factories.py`      | Builds the synthetic leagues the prediction tests run against                      |
 | `football_data/`          | Contains local historical football match data                                       |
 | `.gitignore`              | Specifies files and directories that should not be committed to the repository      |
 | `README.md`               | Project documentation, setup instructions, methodology, and limitations             |
@@ -927,6 +1068,9 @@ The current system has several limitations:
 * Does not currently implement a general missing-value strategy
 * Does not currently predict final scorelines
 * Does not currently calibrate probabilities
+* Refits both models on every prediction run, because no model is saved to disk
+* Fits the prediction models on all seasons, so the held-out scores reported by
+  `train.py` do not describe the predicting model exactly
 * Uses a single latest-season validation split rather than full walk-forward validation
 * Does not currently store formal experiment results
 * Does not currently provide a fully automated live-data pipeline
