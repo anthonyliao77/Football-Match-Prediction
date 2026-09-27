@@ -183,8 +183,6 @@ def run_interactive() -> None:
 
         predictor = predictors[league]
 
-        default = predictor.default_date()
-
         # The predictor is bound as a default argument rather than closed over.
         # ask_until tests the predicate inside the same pass of the loop, so it
         # would behave correctly either way, but a lambda reaching for a loop
@@ -220,6 +218,12 @@ def run_interactive() -> None:
         # the form and Elo lookups compare against the CSV spelling.
         home = predictor.resolve_team(typed_home)
         away = predictor.resolve_team(typed_away)
+
+        # Asked for once the clubs are known, because the useful default is the
+        # date these two next meet and not the next fixture in the league. The
+        # two differ most of the time, and offering a date the clubs are not due
+        # to play answers a question nobody asked.
+        default = predictor.default_date(home, away)
 
         fixture_date = _ask(
             f"Date (YYYY-MM-DD, blank for {default:%Y-%m-%d}): "
