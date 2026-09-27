@@ -25,10 +25,16 @@ endpoint with no published availability, so one league being unreadable is a
 normal enough event that it should not cost you the other two. The exit status
 is non-zero if any league failed, which is what makes this safe to put on a
 schedule.
+
+A league that failed is counted as having an unknown number of stale matches,
+not as having none, and the table says so with a dash. The alternative was a
+refresh that reported every league as clean while one of them had not been
+looked at, which is the failure mode a staleness check exists to prevent.
 """
 
 import argparse
 import sys
+from dataclasses import dataclass
 
 from add_fixtures import _default_season, add_fixtures
 from backfill_xg import backfill_league_xg
@@ -36,12 +42,21 @@ from config import LEAGUES
 from src.understat_client import UnderstatUnavailable
 from src.understat_loader import UnderstatDataError
 
-# The xG summary keys worth reporting, and what to call them in the table.
-XG_FIELDS = [
-    ("xg_filled", "xG written"),
-    ("rows", "rows read"),
-    ("rows_unmatched", "no Understat match"),
-]
+
+@dataclass
+class Summary:
+    """
+    What the refresh found, for deciding the exit status.
+
+    Attributes:
+        failed (int): Leagues that could not be refreshed.
+        stale (int): Played matches with a blank result, across checked leagues.
+        unchecked (int): Leagues whose stale count could not be established.
+    """
+
+    failed: int
+    stale: int
+    unchecked: int
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -106,7 +121,11 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
         "season": season,
         "added": 0,
         "rescheduled": 0,
-        "needs_results": 0,
+        # None rather than 0 until the fixtures step reports, because a league
+        # that failed before that point has not been shown to need no results.
+        # Defaulting to 0 would report a league as clean for the one thing we
+        # did not manage to check.
+        "needs_results": None,
         "xg_filled": 0,
         "rows": 0,
         "rows_unmatched": 0,
@@ -140,16 +159,16 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
     return row
 
 
-def report(rows: list[dict], dry_run: bool) -> int:
+def report(rows: list[dict], dry_run: bool) -> Summary:
     """
-    Prints the summary and returns the number of leagues that failed.
+    Prints the table and returns what it found.
 
     Parameters:
         rows (list[dict]): One row per league, from refresh_league.
         dry_run (bool): Whether this was a dry run.
 
     Returns:
-        int: How many leagues failed.
+        Summary: The failed, stale and unchecked counts, for the exit status.
     """
     verb = "Would change" if dry_run else "Changed"
 
@@ -165,22 +184,35 @@ def report(rows: list[dict], dry_run: bool) -> int:
 
     failed = 0
     stale = 0
+    unchecked = 0
 
     for row in rows:
         if row["error"]:
             failed += 1
-            print(f"{row['league']:<16}  FAILED: {row['error']}")
-            continue
 
-        stale += row["needs_results"]
+        if row["needs_results"] is None:
+            unchecked += 1
+            stale_text = "-"
+        else:
+            stale += row["needs_results"]
+            stale_text = str(row["needs_results"])
 
-        print(
+        line = (
             f"{row['league']:<16}"
             f"{row['added']:>10}"
             f"{row['rescheduled']:>10}"
             f"{row['xg_filled']:>8}"
-            f"{row['needs_results']:>8}"
+            f"{stale_text:>8}"
         )
+
+        # The error goes after the counts, not instead of them. A league that
+        # added its fixtures and then failed on xG has already written to disk,
+        # and a report that hid that behind a bare FAILED would leave the reader
+        # guessing whether a rerun was needed or whether anything happened.
+        if row["error"]:
+            line += f"   FAILED: {row['error']}"
+
+        print(line)
 
     if stale:
         print(
@@ -192,17 +224,29 @@ def report(rows: list[dict], dry_run: bool) -> int:
             "Download the season from football-data.co.uk and replace the file, "
             "then run this again."
         )
-    else:
+    elif not failed and not unchecked:
         print("\nEvery played match on file has its result.")
 
-    if failed:
+    if unchecked:
+        total = len(rows)
+
         print(
-            f"\n{failed} of {len(rows)} leagues could not be refreshed. "
+            f"\nThe stale count is unknown for {unchecked} of {total} "
+            f"{'league' if total == 1 else 'leagues'}, shown as '-', because "
+            "the refresh failed before it could count them. A dash is not a zero."
+        )
+
+    if failed:
+        total = len(rows)
+
+        print(
+            f"\n{failed} of {total} "
+            f"{'league' if total == 1 else 'leagues'} could not be refreshed. "
             "Understat publishes no API and no availability, so this is usually "
             "temporary; rerun before trusting the data."
         )
 
-    return failed
+    return Summary(failed=failed, stale=stale, unchecked=unchecked)
 
 
 def main() -> int:
@@ -221,9 +265,9 @@ def main() -> int:
         for league in leagues
     ]
 
-    failed = report(rows, arguments.dry_run)
+    summary = report(rows, arguments.dry_run)
 
-    return 1 if failed else 0
+    return 1 if summary.failed else 0
 
 
 if __name__ == "__main__":

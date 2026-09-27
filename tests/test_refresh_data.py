@@ -370,3 +370,118 @@ def test_a_failed_league_is_visible_in_the_table(monkeypatch, league_dirs, capsy
     assert "FAILED" in output
     assert "1 of 3 leagues could not be refreshed" in output
 
+
+def test_a_failed_league_does_not_produce_an_all_clear(monkeypatch, league_dirs, capsys):
+    """A league that was never checked cannot be reported as clean.
+
+    This was the worst defect in the script: the stale count skipped leagues
+    that had failed, so a league with 99 stale matches and a league with none
+    both summed to zero, and the run ended by saying every played match on
+    file has its result. The count was the entire point of the command.
+    """
+    def run_fixtures(league, season, dry_run=False):
+        if league == "PremierLeague":
+            raise UnderstatUnavailable("nothing listed")
+
+        return {
+            "added": 0,
+            "rescheduled": 0,
+            "needs_results": 0,
+            "unknown_teams": [],
+        }
+
+    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+
+    monkeypatch.setattr(
+        refresh_data,
+        "backfill_league_xg",
+        lambda league, dry_run=False: {
+            "xg_filled": 0,
+            "rows": 0,
+            "rows_unmatched": 0,
+        },
+    )
+
+    monkeypatch.setattr(refresh_data, "parse_arguments", lambda: argparse_namespace())
+
+    refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    assert "Every played match on file has its result" not in output
+    assert "stale count is unknown" in output
+
+
+def test_a_league_that_was_not_checked_shows_a_dash_not_a_zero(monkeypatch, league_dirs, capsys):
+    """A dash and a zero look identical in a table and mean opposite things."""
+    def run_fixtures(league, season, dry_run=False):
+        if league == "PremierLeague":
+            raise UnderstatUnavailable("nothing listed")
+
+        return {
+            "added": 0,
+            "rescheduled": 0,
+            "needs_results": 0,
+            "unknown_teams": [],
+        }
+
+    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+
+    monkeypatch.setattr(
+        refresh_data,
+        "backfill_league_xg",
+        lambda league, dry_run=False: {
+            "xg_filled": 0,
+            "rows": 0,
+            "rows_unmatched": 0,
+        },
+    )
+
+    monkeypatch.setattr(refresh_data, "parse_arguments", lambda: argparse_namespace())
+
+    refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    failed_line = next(
+        line
+        for line in output.splitlines()
+        if "PremierLeague" in line and "FAILED" in line
+    )
+
+    # The dash is the Stale column, so the last cell before the error text.
+    # Asserting on the last word of the line would be asserting on the error.
+    cells = failed_line.split("FAILED")[0].split()
+
+    assert cells[-1] == "-"
+    assert "A dash is not a zero" in output
+
+
+def test_a_partly_failed_league_still_shows_what_it_wrote(monkeypatch, league_dirs, capsys):
+    """Fixtures written and then an xG failure is not a league where nothing
+    happened. The counts are on disk already, and hiding them behind a bare
+    FAILED leaves the reader unable to tell a rerun is safe from a rerun that
+    would be the first thing to write anything."""
+    stub(monkeypatch)
+
+    def run_xg(league, dry_run=False):
+        raise UnderstatDataError("no 2026/2027")
+
+    monkeypatch.setattr(refresh_data, "backfill_league_xg", run_xg)
+
+    monkeypatch.setattr(refresh_data, "parse_arguments", lambda: argparse_namespace())
+
+    refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    line = next(
+        line
+        for line in output.splitlines()
+        if "PremierLeague" in line and "FAILED" in line
+    )
+
+    # Three fixtures added and one moved, per the stub, shown on the failed line.
+    assert "3" in line.split("FAILED")[0]
+    assert "1" in line.split("FAILED")[0]
+    assert "xG:" in line
