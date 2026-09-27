@@ -280,8 +280,273 @@ def test_a_played_match_missing_from_the_csv_is_reported(
 
     output = capsys.readouterr().out
 
-    assert summary["played_missing"] == 1
+    assert summary["needs_results"] == 1
     assert "2026-08-19" in output
+
+
+def test_a_fixture_played_since_it_was_added_is_reported(
+    league_dir, monkeypatch, capsys
+):
+    """A pending row that has since been played is the common case.
+
+    A fixture is added while it is still upcoming, so the file holds a row with
+    a blank result. Once the match is played the file is out of date, and until
+    the results are downloaded that row reads as a match that has not happened:
+    it is dropped from the features and from the Elo, and the club's recent form
+    goes stale with nothing to say so. Counting only fixtures the file has never
+    heard of misses this entirely, because the row is present and matches on
+    date, home and away.
+    """
+    rows = played_rows()
+
+    rows.append({
+        "Date": "26/08/2026",
+        "Div": "E0",
+        "HomeTeam": "Chelsea",
+        "AwayTeam": "Arsenal",
+        "FTHG": None,
+        "FTAG": None,
+        "FTR": None,
+        "HS": None,
+        "AS": None,
+        "HST": None,
+        "AST": None,
+        "home_xg": None,
+        "away_xg": None,
+        "xg_source": None,
+    })
+
+    write_season(league_dir, "2026-2027.csv", rows)
+
+    # Understat now knows the score for a fixture the file added in advance.
+    played_later = understat_fixtures()
+
+    played_later.loc[len(played_later)] = {
+        "date": pd.Timestamp("2026-08-26"),
+        "home_team": "Chelsea",
+        "away_team": "Arsenal",
+        "home_goals": 2.0,
+        "away_goals": 0.0,
+        "home_xg": 1.8,
+        "away_xg": 0.4,
+        "played": True,
+    }
+
+    monkeypatch.setattr(
+        add_fixtures,
+        "get_league_fixtures",
+        lambda slug, season: played_later,
+    )
+
+    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+
+    output = capsys.readouterr().out
+
+    # The row is on file and matches, so it is not a fixture to add, but its
+    # result is missing and that has to be said out loud.
+    assert summary["added"] == 0
+    assert summary["already_present"] == 3
+    assert summary["needs_results"] == 1
+    assert "2026-08-26" in output
+    assert "football-data.co.uk" in output
+
+
+def test_a_settled_fixture_is_not_reported_as_needing_results(
+    league_dir, monkeypatch, capsys
+):
+    """A match the file already has the result for is not staleness."""
+    write_season(league_dir, "2026-2027.csv", played_rows())
+
+    monkeypatch.setattr(
+        add_fixtures,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures(),
+    )
+
+    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+
+    assert summary["needs_results"] == 0
+    # The count is always reported. The instruction to go and do something
+    # about it is not, because a clean run should not tell you to go and fix
+    # something that is not broken.
+    assert "Refresh the season download" not in capsys.readouterr().out
+
+
+def test_a_postponed_fixture_is_moved_rather_than_duplicated(
+    league_dir, monkeypatch, capsys
+):
+    """A fixture that changes date has its row re-dated, not added again.
+
+    Understat publishes the new date and the file still holds the old one, so
+    the pair is on file at a date Understat no longer lists. Appending it would
+    leave two rows for one match, and the old one with a blank result forever,
+    which reads as a fixture that never happens.
+    """
+    rows = played_rows()
+
+    rows.append({
+        "Date": "26/08/2026",
+        "Div": "E0",
+        "HomeTeam": "Chelsea",
+        "AwayTeam": "Arsenal",
+        "FTHG": None,
+        "FTAG": None,
+        "FTR": None,
+        "HS": None,
+        "AS": None,
+        "HST": None,
+        "AST": None,
+        "home_xg": None,
+        "away_xg": None,
+        "xg_source": None,
+    })
+
+    path = write_season(league_dir, "2026-2027.csv", rows)
+
+    monkeypatch.setattr(
+        add_fixtures,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures(
+            [pending("2026-10-03")]
+        ),
+    )
+
+    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+
+    assert summary["added"] == 0
+    assert summary["rescheduled"] == 1
+
+    # One row for the match, on the new date, still with no result.
+    moved = result[
+        (result["HomeTeam"] == "Chelsea") & (result["AwayTeam"] == "Arsenal")
+        & (result["FTR"].isna())
+    ]
+
+    assert len(moved) == 1
+    assert moved["Date"].tolist() == ["03/10/2026"]
+
+    assert "26/08/2026" not in set(result["Date"])
+
+    assert "moved date" in capsys.readouterr().out
+
+
+def test_a_return_leg_is_added_rather_than_treated_as_a_reschedule(
+    league_dir, monkeypatch
+):
+    """Meeting twice in a season is not a fixture that moved.
+
+    This is the case that makes the reschedule pass dangerous if it is written
+    carelessly. The first meeting has a result, so it is not a candidate for
+    re-dating, and the second is a new row.
+    """
+    rows = played_rows()
+
+    path = write_season(league_dir, "2026-2027.csv", rows)
+
+    monkeypatch.setattr(
+        add_fixtures,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures([pending("2026-11-07")]),
+    )
+
+    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+
+    assert summary["rescheduled"] == 0
+    assert summary["added"] == 1
+    assert len(result) == 3
+    assert "07/11/2026" in set(result["Date"])
+
+
+def test_a_played_row_is_never_re_dated(league_dir, monkeypatch):
+    """A date a match was played on is a fact, not a fixture that moved."""
+    path = write_season(league_dir, "2026-2027.csv", played_rows())
+
+    monkeypatch.setattr(
+        add_fixtures,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures(),
+    )
+
+    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+
+    assert result["Date"].tolist() == ["12/08/2026", "19/08/2026"]
+
+
+def test_a_dry_run_reports_reschedules_without_writing(
+    league_dir, monkeypatch, capsys
+):
+    """The report can be had before anything touches the file."""
+    rows = played_rows()
+
+    rows.append({
+        "Date": "26/08/2026",
+        "Div": "E0",
+        "HomeTeam": "Chelsea",
+        "AwayTeam": "Arsenal",
+        "FTHG": None,
+        "FTAG": None,
+        "FTR": None,
+        "HS": None,
+        "AS": None,
+        "HST": None,
+        "AST": None,
+        "home_xg": None,
+        "away_xg": None,
+        "xg_source": None,
+    })
+
+    path = write_season(league_dir, "2026-2027.csv", rows)
+
+    before = path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        add_fixtures,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures([pending("2026-10-03")]),
+    )
+
+    summary = add_fixtures.add_fixtures(
+        "PremierLeague", "2026/2027", dry_run=True
+    )
+
+    assert summary["rescheduled"] == 1
+    assert path.read_text(encoding="utf-8") == before
+    assert "moved date" in capsys.readouterr().out
+
+
+def test_the_normalised_date_column_is_not_written_to_the_file(league_dir, monkeypatch):
+    """Working state does not leak into the season file."""
+    rows = played_rows()
+
+    rows.append({
+        "Date": "26/08/2026",
+        "Div": "E0",
+        "HomeTeam": "Chelsea",
+        "AwayTeam": "Arsenal",
+        "FTHG": None,
+        "FTAG": None,
+        "FTR": None,
+    })
+
+    path = write_season(league_dir, "2026-2027.csv", rows)
+
+    before = pd.read_csv(path, nrows=0).columns.tolist()
+
+    monkeypatch.setattr(
+        add_fixtures,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures([pending("2026-10-03")]),
+    )
+
+    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+
+    assert pd.read_csv(path, nrows=0).columns.tolist() == before
 
 
 def test_a_dry_run_writes_nothing(league_dir, monkeypatch):

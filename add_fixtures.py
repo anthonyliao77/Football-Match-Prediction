@@ -89,6 +89,145 @@ def _date_key(values) -> pd.Series:
     return pd.to_datetime(values, dayfirst=True).dt.normalize()
 
 
+def _blank_result(frame: pd.DataFrame) -> pd.Series:
+    """
+    Marks the rows that have no result recorded.
+
+    A row with no result is a fixture that has not been played, and that is the
+    only thing this returns True for. An empty string counts as no result, so a
+    file written by hand with blanks behaves the same as one written by this
+    script.
+
+    Parameters:
+        frame (pd.DataFrame): The season as read from the CSV.
+
+    Returns:
+        pd.Series: True where the row carries no result.
+    """
+    if "FTR" not in frame.columns:
+        return pd.Series(True, index=frame.index)
+
+    return frame["FTR"].isna() | (frame["FTR"].astype(str).str.strip() == "")
+
+
+def _reschedule(
+    frame: pd.DataFrame, unmatched: pd.DataFrame
+) -> tuple[pd.DataFrame, list[dict]]:
+    """
+    Moves rows on file to the date Understat now gives them.
+
+    A postponed fixture arrives here twice: once as the row on file, still on
+    the old date, and once in the fixture list, on the new one. Rewriting the
+    row's date settles both, so the season does not end up with two rows for one
+    match and a first row that is never played.
+
+    Only rows with no result are eligible, and that condition is the whole of
+    the safety argument. A league does play the same pairing more than once in a
+    season, but by the time the return leg is listed the first leg has a result,
+    so it is not a candidate and the return leg is left to be added as a new
+    row. A row that has been played is never re-dated either, because its date
+    is the date the match was actually played on, not a fixture that moved.
+
+    Where a pairing has several blank rows and several fixtures, they are paired
+    in date order. Two postponed meetings of the same pair then resolve to the
+    earlier fixture and the later one, which is the only reading that leaves
+    both matches in the file.
+
+    Parameters:
+        frame (pd.DataFrame): The season, with a normalised _date column.
+        unmatched (pd.DataFrame): Understat fixtures with no row on file.
+
+    Returns:
+        tuple: The frame with any moved dates applied, and a list of the moves
+        made, each holding the pair, the old date and the new one.
+    """
+    moves: list[dict] = []
+
+    if not len(unmatched):
+        return frame, moves
+
+    blank = frame[_blank_result(frame)]
+
+    candidates: dict[tuple, list] = {}
+
+    for index in blank.index:
+        pair = (
+            str(blank.at[index, "HomeTeam"]),
+            str(blank.at[index, "AwayTeam"]),
+        )
+
+        candidates.setdefault(pair, []).append(index)
+
+    for pair, rows in candidates.items():
+        rows.sort(key=lambda index: blank.at[index, "_date"])
+
+    for _, fixture in unmatched.sort_values("date").iterrows():
+        pair = (fixture["home_team"], fixture["away_team"])
+
+        available = candidates.get(pair, [])
+
+        if not available:
+            continue
+
+        index = available.pop(0)
+
+        was = frame.at[index, "_date"]
+
+        if was == fixture["date"]:
+            continue
+
+        frame.at[index, "_date"] = fixture["date"]
+        frame.at[index, "Date"] = fixture["date"].strftime("%d/%m/%Y")
+
+        moves.append(
+            {"pair": f"{pair[0]} v {pair[1]}", "was": was, "now": fixture["date"]}
+        )
+
+    return frame, moves
+
+
+def _played_without_a_result(
+    frame: pd.DataFrame, present: pd.DataFrame, missing: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Lists the played matches that have no result in the CSV.
+
+    Both ways of being missing a result are collected. A fixture with no row on
+    file at all, and a fixture whose row is on file and blank because it was
+    added before kickoff, are the same problem from the reader's side: the
+    season file does not know how that match ended.
+
+    Parameters:
+        frame (pd.DataFrame): The season, with a normalised _date column.
+        present (pd.DataFrame): Understat fixtures already matched to a row.
+        missing (pd.DataFrame): Understat fixtures with no row on file.
+
+    Returns:
+        pd.DataFrame: The played fixtures that still have no result on file.
+    """
+    blank = _blank_result(frame)
+
+    keys = {
+        (row._date, str(row.HomeTeam), str(row.AwayTeam)): blank.at[key]
+        for key, row in frame.iterrows()
+    }
+
+    def lacks_a_result(row) -> bool:
+        key = (row["date"], row["home_team"], row["away_team"])
+
+        if key not in keys:
+            return True
+
+        return bool(keys[key])
+
+    played = pd.concat(
+        [present[present["played"]], missing[missing["played"]]],
+        ignore_index=True,
+    )
+
+    return played[played.apply(lacks_a_result, axis=1)]
+
+
 def _outcome(home_goals, away_goals) -> str | None:
     """
     Returns the result letter for a score.
@@ -100,6 +239,7 @@ def _outcome(home_goals, away_goals) -> str | None:
     Returns:
         str: "H", "D" or "A", or None where there is no score.
     """
+
     if pd.isna(home_goals) or pd.isna(away_goals):
         return None
 
@@ -189,12 +329,21 @@ def add_fixtures(league: str, season: str, dry_run: bool = False) -> dict:
         fixtures["home_team"].isin(known) & fixtures["away_team"].isin(known)
     ]
 
-    # Presence is matched on the fixture itself. A postponed match that was
-    # replayed on another date is a different key, so it is reported below
-    # rather than being added a second time under a new date.
+    # Presence is matched on the fixture itself: date, home and away. A fixture
+    # that has moved to a new date is a different key, so it is dealt with by
+    # the reschedule pass below rather than being appended a second time.
+    #
+    # The date column is joined rather than assigned. A football-data.co.uk
+    # season file is 117 columns wide, and pandas reads that as a frame of many
+    # separate blocks, at which point writing a column into it is a per-block
+    # copy and pandas says so. Joining builds a new frame instead.
+    frame = pd.concat(
+        [frame, _date_key(frame["Date"]).rename("_date")], axis=1
+    )
+
     existing = set(
         zip(
-            _date_key(frame["Date"]),
+            frame["_date"],
             frame["HomeTeam"].astype(str),
             frame["AwayTeam"].astype(str),
         )
@@ -207,28 +356,71 @@ def add_fixtures(league: str, season: str, dry_run: bool = False) -> dict:
             row["away_team"],
         ) in existing
 
+    unmatched = known_fixtures[~known_fixtures.apply(is_present, axis=1)]
+
+    # A postponed fixture. Understat publishes the new date and the CSV still
+    # holds the old one, so the pair is on file at a date Understat no longer
+    # lists. Rewriting that row's date is what keeps the season from acquiring a
+    # second row for one match and a first row that is never played.
+    #
+    # Only rows with no result are eligible. That single condition is what makes
+    # this safe: a league does play the same pairing more than once in a season,
+    # but by the time the return leg comes round the first one has a result, so
+    # it is not a candidate and the return leg is added as a new row. A row that
+    # has been played is never rewritten either, because its date is the date it
+    # was actually played on.
+    frame, rescheduled = _reschedule(frame, unmatched)
+
+    existing = set(
+        zip(
+            frame["_date"],
+            frame["HomeTeam"].astype(str),
+            frame["AwayTeam"].astype(str),
+        )
+    )
+
     present = known_fixtures[known_fixtures.apply(is_present, axis=1)]
     missing = known_fixtures[~known_fixtures.apply(is_present, axis=1)]
 
     added = missing[~missing["played"]]
-    undecided = missing[missing["played"]]
+
+    # A played match is missing its result in two ways: the file has no row for
+    # it at all, or the row is there and still blank because the fixture was
+    # added before kickoff and the results have not been downloaded since. The
+    # second is the common one once a season is running, and it is the one that
+    # matters, because a blank row reads as a match that has not been played: it
+    # is dropped from the features and from the Elo, and the club's recent form
+    # quietly goes stale.
+    #
+    # Both are reported together as one instruction. Results come from
+    # football-data.co.uk and are not written here, so the count is how far
+    # behind that download is.
+    settled = _played_without_a_result(frame, present, missing)
 
     print(f"{league} {season}: {len(known_fixtures)} fixtures listed by Understat")
     print(f"  {len(present)} already in {path.rsplit('/', 1)[-1]}")
     print(f"  {len(added)} pending fixtures to add")
-    print(f"  {len(undecided)} played matches missing from the CSV")
+    print(f"  {len(rescheduled)} rescheduled fixtures re-dated")
+    print(f"  {len(settled)} played matches with a blank result in the CSV")
 
-    if len(undecided):
-        print("\n  Played matches the CSV does not hold. Results come from")
-        print("  football-data.co.uk, so these are reported rather than written:")
-        for _, row in undecided.iterrows():
+    if len(rescheduled):
+        print("\n  Fixtures that moved date. The date on file was rewritten:")
+        for row in rescheduled:
+            print(f"    {row['was'].date()} -> {row['now'].date()}  {row['pair']}")
+
+    if len(settled):
+        print("\n  Played matches whose result is not on file. Results come from")
+        print("  football-data.co.uk, so these are reported rather than written.")
+        print("  Refresh the season download, then rerun:")
+        for _, row in settled.iterrows():
             print(f"    {row['date'].date()} {row['home_team']} v {row['away_team']}")
 
-    if dry_run or not len(added):
+    if dry_run or (not len(added) and not len(rescheduled)):
         return {
             "added": len(added),
             "already_present": len(present),
-            "played_missing": len(undecided),
+            "rescheduled": len(rescheduled),
+            "needs_results": len(settled),
             "unknown_teams": unknown,
         }
 
@@ -271,25 +463,42 @@ def add_fixtures(league: str, season: str, dry_run: bool = False) -> dict:
             {column: record[column] for column in wanted}
         )
 
-    combined = pd.concat(
-        [frame, pd.DataFrame(fixtures_to_write)],
-        ignore_index=True,
-    )
+    # A re-dated fixture is a change on its own, so a run can reach here with
+    # nothing to add, and concat is skipped rather than fed an empty frame.
+    #
+    # The normalised _date column is dropped before the concat as well as after
+    # it. The added rows have no counterpart to it, so leaving it in would have
+    # pandas fill the whole column with NaT and widen the datetime dtype, and it
+    # is working state that must not reach the file. The Date column itself was
+    # already corrected in place by the reschedule pass.
+    if fixtures_to_write:
+        combined = pd.concat(
+            [frame.drop(columns=["_date"]), pd.DataFrame(fixtures_to_write)],
+            ignore_index=True,
+        )
+    else:
+        combined = frame.drop(columns=["_date"])
 
     # The fixture columns keep their place in the file, and anything new the
     # added rows introduced is appended, so the shape stays uniform.
     original = pd.read_csv(path, nrows=0).columns.tolist()
     ordered = [column for column in original if column in combined.columns]
-    ordered += [column for column in combined.columns if column not in ordered]
+    ordered += [
+        column for column in combined.columns if column not in ordered
+    ]
 
     write_csv_atomic(path, combined[ordered])
 
-    print(f"\n  Added {len(fixtures_to_write)} pending fixtures to {path}")
+    written = f"{len(fixtures_to_write)} pending fixtures and "
+    written += f"{len(rescheduled)} re-dated fixtures" if rescheduled else ""
+
+    print(f"\n  Wrote {written} to {path}")
 
     return {
         "added": len(fixtures_to_write),
         "already_present": len(present),
-        "played_missing": len(undecided),
+        "rescheduled": len(rescheduled),
+        "needs_results": len(settled),
         "unknown_teams": unknown,
     }
 
