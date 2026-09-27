@@ -3,7 +3,7 @@ Refreshes the season CSVs from Understat in one command.
 
 A season file needs three things kept current, and they come from two places.
 The fixtures still to come and the xG of the matches already played both come
-from Understat, and add_fixtures.py and backfill_xg.py each know how to get one
+from Understat, and sync_understat.py and backfill_xg.py each know how to get one
 of them. The results do not: those come from a football-data.co.uk download,
 which is a manual step this script cannot do and does not pretend to do.
 
@@ -41,11 +41,11 @@ import argparse
 import sys
 from dataclasses import dataclass
 
-from add_fixtures import _default_season, add_fixtures
 from backfill_xg import backfill_league_xg
 from config import LEAGUES
 from src.understat_client import UnderstatUnavailable
 from src.understat_loader import UnderstatDataError
+from sync_understat import _default_season, sync_league
 
 
 @dataclass
@@ -154,7 +154,7 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
         return row
 
     try:
-        fixtures = add_fixtures(league, season, dry_run=dry_run)
+        fixtures = sync_league(league, season, dry_run=dry_run)
 
         row["added"] = fixtures["added"]
         row["rescheduled"] = fixtures["rescheduled"]

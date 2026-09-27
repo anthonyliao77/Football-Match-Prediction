@@ -803,7 +803,7 @@ Football-Prediction-Model/
 ├── predict.py
 ├── update_data.py
 ├── backfill_xg.py
-├── add_fixtures.py
+├── sync_understat.py
 ├── refresh_data.py
 ├── requirements.txt
 ├── football_data/
@@ -831,7 +831,7 @@ Football-Prediction-Model/
 | `predict.py`              | Command-line entry point for predicting a single fixture, and the interactive session |
 | `update_data.py`          | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
 | `backfill_xg.py`          | Command-line entry point for writing Understat xG into the season CSVs              |
-| `add_fixtures.py`         | Command-line entry point for filling the rest of a season's schedule into the CSVs  |
+| `sync_understat.py`       | Command-line entry point that adds the rest of a season's schedule and fills in results |
 | `refresh_data.py`         | Runs the fixture and xG refresh for every league and reports what is stale           |
 | `requirements.txt`        | Lists the Python dependencies and their tested versions                             |
 | `src/api_football.py`     | Fetches API-Football fixtures and merges them into the local CSVs                   |
@@ -968,11 +968,11 @@ Two consequences for anyone reading the files by hand:
 
 ### Adding the rest of the schedule
 
-`add_fixtures.py` fills in the upcoming fixtures for a season from Understat,
+`sync_understat.py` fills in the upcoming fixtures for a season from Understat,
 which lists a full season even before kickoff:
 
 ```bash
-python add_fixtures.py --league PremierLeague --season 2026/2027
+python sync_understat.py --league PremierLeague --season 2026/2027
 ```
 
 Use `--dry-run` first to see what would be added, and `--season` to target a

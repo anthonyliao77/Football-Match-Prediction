@@ -10,7 +10,7 @@ CSV has never seen is reported rather than invented.
 import pandas as pd
 import pytest
 
-import add_fixtures
+import sync_understat
 
 
 @pytest.fixture
@@ -133,11 +133,11 @@ def test_the_season_file_is_matched_exactly(league_dir, monkeypatch):
     write_season(league_dir, "2025-2026.csv", played_rows())
     write_season(league_dir, "2026-2027.csv", played_rows())
 
-    assert add_fixtures._season_file(
+    assert sync_understat._season_file(
         "football_data/PremierLeague", "2026/2027"
     ).endswith("2026-2027.csv")
 
-    assert add_fixtures._season_file(
+    assert sync_understat._season_file(
         "football_data/PremierLeague", "2019/2020"
     ) is None
 
@@ -147,14 +147,14 @@ def test_pending_fixtures_are_added_without_a_result(league_dir, monkeypatch):
     path = write_season(league_dir, "2026-2027.csv", played_rows())
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(
             [pending("2026-08-26"), pending("2026-09-02")]
         ),
     )
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
 
     result = pd.read_csv(path)
 
@@ -180,12 +180,12 @@ def test_a_played_match_is_never_overwritten(league_dir, monkeypatch):
     path = write_season(league_dir, "2026-2027.csv", played_rows())
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures([pending("2026-08-26")]),
     )
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
 
     result = pd.read_csv(path)
 
@@ -201,17 +201,17 @@ def test_running_twice_changes_nothing(league_dir, monkeypatch):
     path = write_season(league_dir, "2026-2027.csv", played_rows())
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(
             [pending("2026-08-26"), pending("2026-09-02")]
         ),
     )
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
     first = path.read_text(encoding="utf-8")
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
 
     assert path.read_text(encoding="utf-8") == first
 
@@ -223,12 +223,12 @@ def test_the_column_order_and_shape_survive(league_dir, monkeypatch):
     before = pd.read_csv(path).columns.tolist()
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures([pending("2026-08-26")]),
     )
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
 
     assert pd.read_csv(path).columns.tolist() == before
 
@@ -242,14 +242,14 @@ def test_a_team_the_csv_has_never_seen_is_left_out(league_dir, monkeypatch):
     path = write_season(league_dir, "2026-2027.csv", played_rows())
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(
             [pending("2026-08-26", "Wigan Athletic", "Arsenal")]
         ),
     )
 
-    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
     assert summary["added"] == 0
     assert summary["unknown_teams"] == ["Wigan Athletic"]
@@ -271,12 +271,12 @@ def test_a_played_match_missing_from_the_csv_is_reported(
     write_season(league_dir, "2026-2027.csv", played_rows()[:1])
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(),
     )
 
-    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
     output = capsys.readouterr().out
 
@@ -333,12 +333,12 @@ def test_a_fixture_played_since_it_was_added_is_reported(
     }
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: played_later,
     )
 
-    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
     output = capsys.readouterr().out
 
@@ -358,12 +358,12 @@ def test_a_settled_fixture_is_not_reported_as_needing_results(
     write_season(league_dir, "2026-2027.csv", played_rows())
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(),
     )
 
-    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
     assert summary["needs_results"] == 0
     # The count is always reported. The instruction to go and do something
@@ -404,14 +404,14 @@ def test_a_postponed_fixture_is_moved_rather_than_duplicated(
     path = write_season(league_dir, "2026-2027.csv", rows)
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(
             [pending("2026-10-03")]
         ),
     )
 
-    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
     result = pd.read_csv(path)
 
@@ -446,12 +446,12 @@ def test_a_return_leg_is_added_rather_than_treated_as_a_reschedule(
     path = write_season(league_dir, "2026-2027.csv", rows)
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures([pending("2026-11-07")]),
     )
 
-    summary = add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
     result = pd.read_csv(path)
 
@@ -466,12 +466,12 @@ def test_a_played_row_is_never_re_dated(league_dir, monkeypatch):
     path = write_season(league_dir, "2026-2027.csv", played_rows())
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(),
     )
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
 
     result = pd.read_csv(path)
 
@@ -506,12 +506,12 @@ def test_a_dry_run_reports_reschedules_without_writing(
     before = path.read_text(encoding="utf-8")
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures([pending("2026-10-03")]),
     )
 
-    summary = add_fixtures.add_fixtures(
+    summary = sync_understat.sync_league(
         "PremierLeague", "2026/2027", dry_run=True
     )
 
@@ -539,12 +539,12 @@ def test_the_normalised_date_column_is_not_written_to_the_file(league_dir, monke
     before = pd.read_csv(path, nrows=0).columns.tolist()
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures([pending("2026-10-03")]),
     )
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
 
     assert pd.read_csv(path, nrows=0).columns.tolist() == before
 
@@ -556,12 +556,12 @@ def test_a_dry_run_writes_nothing(league_dir, monkeypatch):
     before = path.read_text(encoding="utf-8")
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures([pending("2026-08-26")]),
     )
 
-    summary = add_fixtures.add_fixtures(
+    summary = sync_understat.sync_league(
         "PremierLeague", "2026/2027", dry_run=True
     )
 
@@ -595,14 +595,14 @@ def test_understat_team_names_are_translated(league_dir, monkeypatch):
     path = write_season(league_dir, "2026-2027.csv", rows)
 
     monkeypatch.setattr(
-        add_fixtures,
+        sync_understat,
         "get_league_fixtures",
         lambda slug, season: understat_fixtures(
             [pending("2026-09-12", "Manchester City", "Arsenal")]
         ),
     )
 
-    add_fixtures.add_fixtures("PremierLeague", "2026/2027")
+    sync_understat.sync_league("PremierLeague", "2026/2027")
 
     result = pd.read_csv(path)
 
@@ -614,8 +614,8 @@ def test_understat_team_names_are_translated(league_dir, monkeypatch):
 
 def test_the_outcome_letter_is_only_given_where_there_is_a_score():
     """No score means no result, rather than a default."""
-    assert add_fixtures._outcome(2, 1) == "H"
-    assert add_fixtures._outcome(1, 1) == "D"
-    assert add_fixtures._outcome(0, 2) == "A"
-    assert add_fixtures._outcome(None, None) is None
-    assert add_fixtures._outcome(1, None) is None
+    assert sync_understat._outcome(2, 1) == "H"
+    assert sync_understat._outcome(1, 1) == "D"
+    assert sync_understat._outcome(0, 2) == "A"
+    assert sync_understat._outcome(None, None) is None
+    assert sync_understat._outcome(1, None) is None

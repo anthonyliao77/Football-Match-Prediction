@@ -272,7 +272,7 @@ def _div_for(frame: pd.DataFrame, league: str) -> str:
     return LEAGUES[league]["div"]
 
 
-def add_fixtures(league: str, season: str, dry_run: bool = False) -> dict:
+def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
     """
     Adds the season's pending fixtures to one league's CSV.
 
@@ -592,7 +592,7 @@ def main():
             continue
 
         try:
-            add_fixtures(league, season, dry_run=arguments.dry_run)
+            sync_league(league, season, dry_run=arguments.dry_run)
         except (UnderstatUnavailable, FileNotFoundError) as error:
             print(f"{league}: {error}")
 

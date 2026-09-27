@@ -14,9 +14,9 @@ import pandas as pd
 import pytest
 
 import refresh_data
-from add_fixtures import UnderstatUnavailable
 from backfill_xg import UnderstatDataError
 from config import LEAGUES
+from sync_understat import UnderstatUnavailable
 
 
 def argparse_namespace(league="all", dry_run=False, require_fresh=False):
@@ -89,7 +89,7 @@ def stub(monkeypatch, fixtures=None, xg=None, fixtures_error=None, xg_error=None
             "rows_unmatched": 0,
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
     monkeypatch.setattr(refresh_data, "backfill_league_xg", run_xg)
 
     return calls
@@ -114,7 +114,7 @@ def test_both_steps_run_for_a_league(monkeypatch, league_dirs):
 
     monkeypatch.setattr(
         refresh_data,
-        "add_fixtures",
+        "sync_league",
         lambda league, season, dry_run=False: order.append("fixtures")
         or {
             "added": 0,
@@ -188,7 +188,7 @@ def test_one_league_failing_does_not_stop_the_others(monkeypatch, league_dirs):
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -261,7 +261,7 @@ def test_the_exit_status_is_non_zero_when_a_league_fails(
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -325,7 +325,7 @@ def test_a_clean_run_does_not_tell_you_to_go_and_fix_something(
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -357,7 +357,7 @@ def test_a_failed_league_is_visible_in_the_table(monkeypatch, league_dirs, capsy
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -394,7 +394,7 @@ def test_a_failed_league_does_not_produce_an_all_clear(monkeypatch, league_dirs,
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -429,7 +429,7 @@ def test_a_league_that_was_not_checked_shows_a_dash_not_a_zero(monkeypatch, leag
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -521,7 +521,7 @@ def test_require_fresh_exits_zero_when_there_is_nothing_to_fetch(
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -557,7 +557,7 @@ def test_require_fresh_also_fails_on_an_unchecked_league(monkeypatch, league_dir
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
@@ -589,7 +589,7 @@ def test_the_require_fresh_flag_is_parsed_by_the_command_line(monkeypatch, leagu
             "unknown_teams": [],
         }
 
-    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+    monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
     monkeypatch.setattr(
         refresh_data,
