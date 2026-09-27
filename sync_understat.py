@@ -1,26 +1,40 @@
 """
-Writes the remaining fixtures of a season into the local season CSVs.
+Brings the local season CSVs up to date with Understat in one pass.
 
-football-data.co.uk publishes a season as it is played, so a CSV downloaded
-partway through a season holds only the matches that have been decided. Understat
-lists the whole season at once, including the fixtures still to come, each with
-its date and sides but no score. This script copies those pending fixtures in, so
-the CSV holds the season's schedule rather than only its results.
+Two kinds of thing are missing from a season file, and they come from the same
+place now that they are filled from the same source.
 
-A pending fixture is written with no result. That is what keeps it out of the
-model: src/training.py and src/predict.py drop rows with no FTR before the
-feature and Elo passes, and the season being predicted is held out of the fit
-anyway. A fixture is a date and two clubs, not a match, and the pipeline has no
-way to read one as a result.
+The season's remaining fixtures. football-data.co.uk publishes a season as it is
+played, so a CSV downloaded partway through holds only the matches that have
+been decided. Understat lists the whole season at once, including the fixtures
+still to come, each with its date and sides but no score.
 
-Existing rows are never touched. A played match is never overwritten, and a
-fixture already in the file is left exactly as it is, so running this twice
-changes nothing the second time.
+The results of matches that have since been played. A fixture added before
+kickoff leaves a row with a blank result, and that row is not a neutral blank:
+it reads as a match that has not happened, so it is dropped from the features
+and from the Elo and the club's recent form goes stale with nothing to say so.
+Understat publishes a score as soon as the match is over, so the result is
+filled in here rather than waiting for the next manual download.
 
-A played match that Understat has and the CSV does not is reported rather than
-written. Results belong to football-data.co.uk, and a fixture that has been
-played but is missing from the CSV is a gap in that source, not a scheduling
-question, so it is named instead of being filled in from a second source.
+The cost of the two is not the same, and that asymmetry is why they are handled
+differently. A score is in the league payload this script has already read, so
+filling one costs nothing. Shots are not: Understat's league payload has no
+shot counts on it at all, and they cost one request per match. So they are only
+fetched for a match that is actually being filled, and never to re-derive what
+the file already holds.
+
+A match is written whole or not at all, which is the rule everything else bends
+around. src/features.py turns a missing number into a zero on purpose, so a row
+given a score and no shot counts is not a row with two blanks in it but a row
+claiming the club managed no shots in that match. Nothing would fail. The
+features would sum, the model would predict, and the answer would be quietly
+wrong by about twenty shots.
+
+Existing rows are never overwritten. Any row that already has a result keeps it,
+whatever the other source says, so the football-data.co.uk download stays the
+authority on every row that has one and a disagreement between the two is
+counted and shown rather than silently resolved. Running this twice changes
+nothing the second time, and spends no requests.
 """
 
 import argparse
@@ -31,7 +45,17 @@ import pandas as pd
 
 from config import LEAGUES, TEAM_NAME_MAP
 from src.data_loader import prediction_season, write_csv_atomic
-from src.understat_client import UnderstatUnavailable, get_league_fixtures
+from src.results import (
+    FILLED_COLUMNS,
+    RESULT_SOURCE_COLUMN,
+    SHOT_COLUMNS,
+    UNDERSTAT_RESULT_SOURCE,
+)
+from src.understat_client import (
+    UnderstatUnavailable,
+    get_league_fixtures,
+    get_match_shots,
+)
 
 # The xG columns come from src.xg, which is where backfill_xg.py writes them.
 from src.xg import SOURCE_COLUMN, XG_COLUMNS
@@ -110,6 +134,24 @@ def _blank_result(frame: pd.DataFrame) -> pd.Series:
     return frame["FTR"].isna() | (frame["FTR"].astype(str).str.strip() == "")
 
 
+def _shot_gaps(frame: pd.DataFrame, index) -> list[str]:
+    """
+    Names the shot columns a row that already has a result is still missing.
+
+    Parameters:
+        frame (pd.DataFrame): The season as read from the CSV.
+        index: The row to look at.
+
+    Returns:
+        list[str]: The empty shot columns, or an empty list where the row is
+        whole.
+    """
+    present = [column for column in FILLED_COLUMNS if column in frame.columns]
+    absent = [column for column in present if pd.isna(frame.at[index, column])]
+
+    return [column for column in absent if column in SHOT_COLUMNS]
+
+
 def _reschedule(
     frame: pd.DataFrame, unmatched: pd.DataFrame
 ) -> tuple[pd.DataFrame, list[dict]]:
@@ -186,46 +228,191 @@ def _reschedule(
     return frame, moves
 
 
-def _played_without_a_result(
-    frame: pd.DataFrame, present: pd.DataFrame, missing: pd.DataFrame
-) -> pd.DataFrame:
+def _local_index(frame: pd.DataFrame) -> dict:
     """
-    Lists the played matches that have no result in the CSV.
-
-    Both ways of being missing a result are collected. A fixture with no row on
-    file at all, and a fixture whose row is on file and blank because it was
-    added before kickoff, are the same problem from the reader's side: the
-    season file does not know how that match ended.
+    Indexes the rows on file by the key a fixture is matched on.
 
     Parameters:
         frame (pd.DataFrame): The season, with a normalised _date column.
-        present (pd.DataFrame): Understat fixtures already matched to a row.
-        missing (pd.DataFrame): Understat fixtures with no row on file.
 
     Returns:
-        pd.DataFrame: The played fixtures that still have no result on file.
+        dict: (date, home team, away team) to the row's index.
     """
-    blank = _blank_result(frame)
-
-    keys = {
-        (row._date, str(row.HomeTeam), str(row.AwayTeam)): blank.at[key]
-        for key, row in frame.iterrows()
+    return {
+        (row._date, str(row.HomeTeam), str(row.AwayTeam)): index
+        for index, row in frame.iterrows()
     }
 
-    def lacks_a_result(row) -> bool:
-        key = (row["date"], row["home_team"], row["away_team"])
 
-        if key not in keys:
-            return True
+def _looks_unplayed(home_goals, away_goals, shots: dict) -> bool:
+    """
+    Reports whether a 0-0 is a match nobody took part in.
 
-        return bool(keys[key])
+    A goalless draw with not one shot between the two teams is not a football
+    match, it is a fixture Understat has listed and scored 0-0 because the game
+    was abandoned, postponed to a date it has not published, or never played. The
+    leagues do record those, and writing one of them as a played 0-0 would add a
+    match to the season that never happened, complete with a form entry and an
+    Elo result for both clubs.
 
-    played = pd.concat(
-        [present[present["played"]], missing[missing["played"]]],
-        ignore_index=True,
-    )
+    The test is deliberately narrow. A real goalless draw has shots, so only the
+    no-shots-at-all case is caught, and a match abandoned after kickoff still
+    counts as played, which is the right way round: guessing at the rest would
+    mean skipping real results.
 
-    return played[played.apply(lacks_a_result, axis=1)]
+    Parameters:
+        home_goals: Goals scored by the home team.
+        away_goals: Goals scored by the away team.
+        shots (dict): The counts from get_match_shots.
+
+    Returns:
+        bool: True where this should be left unwritten.
+    """
+    if home_goals or away_goals:
+        return False
+
+    return not (shots["home_shots"] or shots["away_shots"])
+
+
+def _plan_results(
+    frame: pd.DataFrame, played: pd.DataFrame
+) -> tuple[list[dict], list[dict], list[dict], list[dict], int]:
+    """
+    Decides which played matches to write a result for, and fetches the shots.
+
+    Three things are deliberately different here. A match already on file with a
+    result is never touched, so the football-data.co.uk download stays the
+    authority on every row that has one. A match with no row at all, or a row
+    still blank, is filled from Understat. And a match whose two sources
+    disagree is counted, not resolved, because a rewrite would mean trusting one
+    number over another on no evidence and no way back.
+
+    Every match is written whole or not at all. That is the constraint the whole
+    design turns on. src/features.py coerces a missing number to zero on purpose,
+    so a row given a score and no shot counts is not a row with two blanks in it
+    but a row that tells the model the club managed no shots and no shots on
+    target in that match. The error would not surface anywhere: the features
+    would sum, the model would predict, and the result would be quietly wrong by
+    about twenty shots. So if the shot counts cannot be had, neither is the score.
+
+    One request is spent per match filled, and none per match already on file.
+
+    Parameters:
+        frame (pd.DataFrame): The season, with a normalised _date column.
+        played (pd.DataFrame): Understat's fixtures that have been played.
+
+    Returns:
+        tuple: The matches to write, the ones deliberately left alone, the ones
+        whose scores the two sources disagree about, the rows that already carry
+        a result but are missing shot counts, and how many match requests were
+        spent.
+    """
+    local = _local_index(frame)
+    blank = _blank_result(frame)
+
+    to_write: list[dict] = []
+    abandoned: list[dict] = []
+    disagreements: list[dict] = []
+    partial: list[dict] = []
+    requests = 0
+
+    for _, fixture in played.iterrows():
+        key = (
+            fixture["date"],
+            str(fixture["home_team"]),
+            str(fixture["away_team"]),
+        )
+
+        home_goals = fixture["home_goals"]
+        away_goals = fixture["away_goals"]
+
+        outcome = _outcome(home_goals, away_goals)
+
+        if outcome is None:
+            continue
+
+        index = local.get(key)
+
+        if index is not None and not blank.at[index]:
+            theirs = outcome
+            ours = str(frame.at[index, "FTR"]).strip()
+
+            if ours and ours != theirs:
+                disagreements.append({
+                    "pair": f"{key[1]} v {key[2]}",
+                    "date": key[0],
+                    "ours": ours,
+                    "theirs": theirs,
+                })
+
+            gaps = _shot_gaps(frame, index)
+
+            if gaps:
+                # A row that already carries a result is left exactly as it is,
+                # and that rule is what keeps the two vendors out of the same
+                # match. It is also how a half-complete row stays half-complete
+                # forever, and the features read a blank shot count as zero, so
+                # this is reported rather than quietly tolerated. The fix is a
+                # decision about which source that row belongs to, not something
+                # to settle here.
+                partial.append({
+                    "pair": f"{key[1]} v {key[2]}",
+                    "date": key[0],
+                    "missing": gaps,
+                })
+
+            continue
+
+        if pd.isna(fixture["understat_id"]):
+            abandoned.append({
+                "pair": f"{key[1]} v {key[2]}",
+                "date": key[0],
+                "reason": "Understat listed it without an id to read shots from",
+            })
+
+            continue
+
+        requests += 1
+
+        try:
+            shots = get_match_shots(fixture["understat_id"])
+        except UnderstatUnavailable as error:
+            # The score is in hand and is not written, because a row with a
+            # score and no shot counts is worse than a blank row.
+            abandoned.append({
+                "pair": f"{key[1]} v {key[2]}",
+                "date": key[0],
+                "reason": str(error),
+            })
+
+            continue
+
+        if _looks_unplayed(home_goals, away_goals, shots):
+            abandoned.append({
+                "pair": f"{key[1]} v {key[2]}",
+                "date": key[0],
+                "reason": "0-0 with no shots from either side, so probably not "
+                "a match that was played",
+            })
+
+            continue
+
+        to_write.append({
+            "key": key,
+            "index": index,
+            "date": key[0],
+            "home_team": key[1],
+            "away_team": key[2],
+            "FTHG": int(home_goals),
+            "FTAG": int(away_goals),
+            "FTR": outcome,
+            "HS": shots["home_shots"],
+            "AS": shots["away_shots"],
+            "HST": shots["home_on_target"],
+            "AST": shots["away_on_target"],
+        })
+
+    return to_write, abandoned, disagreements, partial, requests
 
 
 def _outcome(home_goals, away_goals) -> str | None:
@@ -384,43 +571,99 @@ def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
 
     added = missing[~missing["played"]]
 
-    # A played match is missing its result in two ways: the file has no row for
-    # it at all, or the row is there and still blank because the fixture was
-    # added before kickoff and the results have not been downloaded since. The
-    # second is the common one once a season is running, and it is the one that
-    # matters, because a blank row reads as a match that has not been played: it
-    # is dropped from the features and from the Elo, and the club's recent form
-    # quietly goes stale.
-    #
-    # Both are reported together as one instruction. Results come from
-    # football-data.co.uk and are not written here, so the count is how far
-    # behind that download is.
-    settled = _played_without_a_result(frame, present, missing)
+    played_upstream = pd.concat(
+        [present[present["played"]], missing[missing["played"]]],
+        ignore_index=True,
+    )
+
+    # A match Understat has played and the file has no result for is filled in,
+    # which is what makes the season self-healing. Both ways of missing one are
+    # covered: a fixture the file never heard of, and a row that is on file and
+    # still blank because it was added before kickoff. The second is the common
+    # case once a season is running, and it is the one that matters, because a
+    # blank row reads as a match that has not happened: it is dropped from the
+    # features and from the Elo, and the club's recent form goes stale quietly.
+    # A match can only be written whole. A season file that does not carry every
+    # one of those columns cannot hold a complete match, so nothing is filled
+    # rather than a result written without the shot counts beside it. The
+    # football-data.co.uk download is what supplies the columns, and every file
+    # this project has seen carries all seven.
+    absent = [column for column in FILLED_COLUMNS if column not in frame.columns]
+
+    if absent:
+        to_write, abandoned, disagreements, partial, requests = [], [], [], [], 0
+
+        print(
+            f"  WARNING: {path.rsplit('/', 1)[-1]} has no {', '.join(absent)}, so "
+            f"no result can be written without leaving a half-complete match. "
+            f"Re-download the season from football-data.co.uk."
+        )
+    else:
+        to_write, abandoned, disagreements, partial, requests = _plan_results(
+            frame, played_upstream
+        )
+
+    filling = [row for row in to_write if row["index"] is not None]
+    appending = [row for row in to_write if row["index"] is None]
+
+    for row in filling:
+        for column in FILLED_COLUMNS:
+            frame.at[row["index"], column] = row[column]
+
+        if RESULT_SOURCE_COLUMN in frame.columns:
+            frame.at[row["index"], RESULT_SOURCE_COLUMN] = (
+                UNDERSTAT_RESULT_SOURCE
+            )
 
     print(f"{league} {season}: {len(known_fixtures)} fixtures listed by Understat")
     print(f"  {len(present)} already in {path.rsplit('/', 1)[-1]}")
     print(f"  {len(added)} pending fixtures to add")
     print(f"  {len(rescheduled)} rescheduled fixtures re-dated")
-    print(f"  {len(settled)} played matches with a blank result in the CSV")
+    print(f"  {len(filling)} played matches filled in from Understat")
+    print(f"  {len(appending)} played matches added in from Understat")
+    print(f"  {requests} Understat match requests spent on shot counts")
 
     if len(rescheduled):
         print("\n  Fixtures that moved date. The date on file was rewritten:")
         for row in rescheduled:
             print(f"    {row['was'].date()} -> {row['now'].date()}  {row['pair']}")
 
-    if len(settled):
-        print("\n  Played matches whose result is not on file. Results come from")
-        print("  football-data.co.uk, so these are reported rather than written.")
-        print("  Refresh the season download, then rerun:")
-        for _, row in settled.iterrows():
-            print(f"    {row['date'].date()} {row['home_team']} v {row['away_team']}")
+    if partial:
+        print("\n  Rows with a result but missing shot counts. Left exactly as")
+        print("  they are, since filling them would put Understat's shots beside")
+        print("  another source's goals, but a blank reads as zero downstream:")
+        for row in partial:
+            print(f"    {row['date'].date()} {row['pair']}  "
+                  f"no {', '.join(row['missing'])}")
 
-    if dry_run or (not len(added) and not len(rescheduled)):
+    if disagreements:
+        print("\n  Matches where the two sources disagree. The value on file is")
+        print("  kept and nothing is written, but the difference is worth seeing:")
+        for row in disagreements:
+            print(f"    {row['date'].date()} {row['pair']}  "
+                  f"file {row['ours']} vs Understat {row['theirs']}")
+
+    if abandoned:
+        print("\n  Played matches left without a result:")
+        for row in abandoned:
+            print(f"    {row['date'].date()} {row['pair']}")
+            print(f"      {row['reason']}")
+
+    writes_pending = bool(
+        len(added) or rescheduled or filling or appending or partial
+    )
+
+    if dry_run or not writes_pending:
         return {
             "added": len(added),
             "already_present": len(present),
             "rescheduled": len(rescheduled),
-            "needs_results": len(settled),
+            "needs_results": len(abandoned),
+            "results_filled": len(filling),
+            "results_added": len(appending),
+            "disagreements": len(disagreements),
+            "partial_results": len(partial),
+            "match_requests": requests,
             "unknown_teams": unknown,
         }
 
@@ -446,7 +689,10 @@ def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
     if SOURCE_COLUMN in frame.columns:
         wanted.append(SOURCE_COLUMN)
 
-    fixtures_to_write = []
+    if RESULT_SOURCE_COLUMN in frame.columns:
+        wanted.append(RESULT_SOURCE_COLUMN)
+
+    rows_to_write = []
 
     for _, row in added.iterrows():
         record = {
@@ -459,7 +705,29 @@ def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
         for column in wanted:
             record.setdefault(column, None)
 
-        fixtures_to_write.append(
+        rows_to_write.append(
+            {column: record[column] for column in wanted}
+        )
+
+    # A played match with no row on file is appended with its result, exactly
+    # as a pending fixture is appended without one. Both are a match the season
+    # was missing, and the difference is only what the row can say about it.
+    for row in appending:
+        record = {
+            "Date": row["date"].strftime("%d/%m/%Y"),
+            "Div": div,
+            "HomeTeam": row["home_team"],
+            "AwayTeam": row["away_team"],
+            RESULT_SOURCE_COLUMN: UNDERSTAT_RESULT_SOURCE,
+        }
+
+        for column in FILLED_COLUMNS:
+            record[column] = row[column]
+
+        for column in wanted:
+            record.setdefault(column, None)
+
+        rows_to_write.append(
             {column: record[column] for column in wanted}
         )
 
@@ -471,9 +739,9 @@ def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
     # pandas fill the whole column with NaT and widen the datetime dtype, and it
     # is working state that must not reach the file. The Date column itself was
     # already corrected in place by the reschedule pass.
-    if fixtures_to_write:
+    if rows_to_write:
         combined = pd.concat(
-            [frame.drop(columns=["_date"]), pd.DataFrame(fixtures_to_write)],
+            [frame.drop(columns=["_date"]), pd.DataFrame(rows_to_write)],
             ignore_index=True,
         )
     else:
@@ -489,16 +757,29 @@ def sync_league(league: str, season: str, dry_run: bool = False) -> dict:
 
     write_csv_atomic(path, combined[ordered])
 
-    written = f"{len(fixtures_to_write)} pending fixtures and "
-    written += f"{len(rescheduled)} re-dated fixtures" if rescheduled else ""
+    parts = []
 
-    print(f"\n  Wrote {written} to {path}")
+    if rows_to_write:
+        parts.append(f"{len(rows_to_write)} new rows")
+
+    if rescheduled:
+        parts.append(f"{len(rescheduled)} re-dated fixtures")
+
+    if filling:
+        parts.append(f"{len(filling)} results filled in")
+
+    print(f"\n  Wrote {', '.join(parts)} to {path}")
 
     return {
-        "added": len(fixtures_to_write),
+        "added": len(added),
         "already_present": len(present),
         "rescheduled": len(rescheduled),
-        "needs_results": len(settled),
+        "needs_results": len(abandoned),
+        "results_filled": len(filling),
+        "results_added": len(appending),
+        "disagreements": len(disagreements),
+        "partial_results": len(partial),
+        "match_requests": requests,
         "unknown_teams": unknown,
     }
 

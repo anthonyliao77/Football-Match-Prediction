@@ -91,6 +91,7 @@ def understat_fixtures(extra=()):
             "home_xg": 2.1,
             "away_xg": 0.9,
             "played": True,
+            "understat_id": "1",
         },
         {
             "date": pd.Timestamp("2026-08-19"),
@@ -101,6 +102,7 @@ def understat_fixtures(extra=()):
             "home_xg": 0.7,
             "away_xg": 1.1,
             "played": True,
+            "understat_id": "2",
         },
     ]
 
@@ -120,7 +122,40 @@ def pending(date, home="Chelsea", away="Arsenal"):
         "home_xg": None,
         "away_xg": None,
         "played": False,
+        "understat_id": "9",
     }
+
+
+def stub_shots(monkeypatch, by_id=None, default=None):
+    """
+    Points the script at a fake per-match shot reader.
+
+    A count is looked up by the match id, so one match can be made to fail while
+    its neighbours succeed, which is the case worth testing.
+
+    Parameters:
+        monkeypatch: The pytest fixture.
+        by_id (dict): Match id to a count dict, or to an exception to raise.
+        default (dict): The counts for any id not named.
+    """
+    counts = default or {
+        "home_shots": 12,
+        "away_shots": 7,
+        "home_on_target": 5,
+        "away_on_target": 3,
+    }
+
+    by_id = by_id or {}
+
+    def read(match_id):
+        value = by_id.get(str(match_id), counts)
+
+        if isinstance(value, Exception):
+            raise value
+
+        return value
+
+    monkeypatch.setattr(sync_understat, "get_match_shots", read)
 
 
 def test_the_season_file_is_matched_exactly(league_dir, monkeypatch):
@@ -259,16 +294,50 @@ def test_a_team_the_csv_has_never_seen_is_left_out(league_dir, monkeypatch):
     assert "Wigan Athletic" not in set(result["HomeTeam"])
 
 
-def test_a_played_match_missing_from_the_csv_is_reported(
-    league_dir, monkeypatch, capsys
+def test_a_played_match_missing_from_the_csv_is_added_with_its_result(
+    league_dir, monkeypatch
 ):
-    """A gap in the results is named, not filled in from a second source.
+    """A match the season file has never heard of is added, decided.
 
-    Results belong to football-data.co.uk. A match that has been played but is
-    not in the CSV is a gap in that source rather than a scheduling question, so
-    it is listed for the user to resolve.
+    It used to be reported and left out, on the grounds that results belong to
+    football-data.co.uk. That was true and it left the season permanently short
+    a match that had been played, which is the one thing the file is for.
     """
-    write_season(league_dir, "2026-2027.csv", played_rows()[:1])
+    path = write_season(league_dir, "2026-2027.csv", played_rows()[:1])
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures(),
+    )
+    stub_shots(monkeypatch)
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+
+    assert summary["results_added"] == 1
+    assert summary["needs_results"] == 0
+    assert len(result) == 2
+
+    added = result[result["Date"] == "19/08/2026"].iloc[0]
+
+    assert added["FTHG"] == 0
+    assert added["FTAG"] == 0
+    assert added["FTR"] == "D"
+    # The 19/08 goalless draw had shots in it, which is what separates it from
+    # a fixture that was never played at all.
+    assert added["HS"] == 12
+    assert added["AST"] == 3
+
+
+def test_a_filled_result_is_not_filled_again(league_dir, monkeypatch):
+    """The second run has nothing to do and spends no requests.
+
+    Results are fetched per match, so a script that re-read the shots for a
+    match it had already written would cost a request per match per run, every
+    run, for data it already had."""
+    path = write_season(league_dir, "2026-2027.csv", played_rows()[:1])
 
     monkeypatch.setattr(
         sync_understat,
@@ -276,26 +345,48 @@ def test_a_played_match_missing_from_the_csv_is_reported(
         lambda slug, season: understat_fixtures(),
     )
 
+    spent = []
+
+    def read(match_id):
+        spent.append(match_id)
+
+        return {
+            "home_shots": 12,
+            "away_shots": 7,
+            "home_on_target": 5,
+            "away_on_target": 3,
+        }
+
+    monkeypatch.setattr(sync_understat, "get_match_shots", read)
+
+    sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    first = pd.read_csv(path)
+    spent.clear()
+
     summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
-    output = capsys.readouterr().out
+    second = pd.read_csv(path)
 
-    assert summary["needs_results"] == 1
-    assert "2026-08-19" in output
+    assert spent == []
+    assert summary["results_filled"] == 0
+    assert summary["results_added"] == 0
+    assert summary["match_requests"] == 0
+    assert first.equals(second)
 
 
-def test_a_fixture_played_since_it_was_added_is_reported(
+def test_a_fixture_played_since_it_was_added_is_filled_in(
     league_dir, monkeypatch, capsys
 ):
-    """A pending row that has since been played is the common case.
+    """A pending row that has since been played is the common case, and it is
+    now the case the script exists to fix.
 
     A fixture is added while it is still upcoming, so the file holds a row with
-    a blank result. Once the match is played the file is out of date, and until
-    the results are downloaded that row reads as a match that has not happened:
-    it is dropped from the features and from the Elo, and the club's recent form
-    goes stale with nothing to say so. Counting only fixtures the file has never
-    heard of misses this entirely, because the row is present and matches on
-    date, home and away.
+    a blank result. Once the match is played the row is out of date, and left
+    blank it reads as a match that has not happened: it is dropped from the
+    features and from the Elo, and the club's recent form goes stale with nothing
+    to say so. Counting only fixtures the file has never heard of missed this
+    entirely, because the row is present and matches on date, home and away.
     """
     rows = played_rows()
 
@@ -330,6 +421,7 @@ def test_a_fixture_played_since_it_was_added_is_reported(
         "home_xg": 1.8,
         "away_xg": 0.4,
         "played": True,
+        "understat_id": "3",
     }
 
     monkeypatch.setattr(
@@ -337,18 +429,32 @@ def test_a_fixture_played_since_it_was_added_is_reported(
         "get_league_fixtures",
         lambda slug, season: played_later,
     )
+    stub_shots(monkeypatch, by_id={"3": {
+        "home_shots": 18,
+        "away_shots": 6,
+        "home_on_target": 7,
+        "away_on_target": 2,
+    }})
 
     summary = sync_understat.sync_league("PremierLeague", "2026/2027")
 
-    output = capsys.readouterr().out
+    result = pd.read_csv(league_dir / "2026-2027.csv")
 
-    # The row is on file and matches, so it is not a fixture to add, but its
-    # result is missing and that has to be said out loud.
+    # The row was on file and matched, so it is not a fixture to add. It is
+    # filled in where it stands, which is the point.
     assert summary["added"] == 0
     assert summary["already_present"] == 3
-    assert summary["needs_results"] == 1
-    assert "2026-08-26" in output
-    assert "football-data.co.uk" in output
+    assert summary["results_filled"] == 1
+    assert summary["needs_results"] == 0
+    assert len(result) == 3
+
+    filled = result[result["Date"] == "26/08/2026"].iloc[0]
+
+    assert filled["FTHG"] == 2
+    assert filled["FTAG"] == 0
+    assert filled["FTR"] == "H"
+    assert filled["HS"] == 18
+    assert filled["AST"] == 2
 
 
 def test_a_settled_fixture_is_not_reported_as_needing_results(
@@ -619,3 +725,391 @@ def test_the_outcome_letter_is_only_given_where_there_is_a_score():
     assert sync_understat._outcome(0, 2) == "A"
     assert sync_understat._outcome(None, None) is None
     assert sync_understat._outcome(1, None) is None
+
+
+def blank_row(date="26/08/2026", home="Chelsea", away="Arsenal"):
+    """A fixture the file added before kickoff and is still holding open."""
+    return {
+        "Date": date,
+        "Div": "E0",
+        "HomeTeam": home,
+        "AwayTeam": away,
+        "FTHG": None,
+        "FTAG": None,
+        "FTR": None,
+        "HS": None,
+        "AS": None,
+        "HST": None,
+        "AST": None,
+        "home_xg": None,
+        "away_xg": None,
+        "xg_source": None,
+    }
+
+
+def played_on(date, home, away, home_goals, away_goals, match_id="3"):
+    """An Understat fixture that has been played."""
+    return {
+        "date": pd.Timestamp(date),
+        "home_team": home,
+        "away_team": away,
+        "home_goals": home_goals,
+        "away_goals": away_goals,
+        "home_xg": 1.4,
+        "away_xg": 0.7,
+        "played": True,
+        "understat_id": match_id,
+    }
+
+
+def test_a_score_is_never_written_without_its_shot_counts(league_dir, monkeypatch):
+    """The rule the whole design turns on.
+
+    src/features.py coerces a missing number to zero on purpose, so a row given
+    a score and no shots is not a row with blanks in it. It is a row claiming
+    the club managed no shots, and nothing anywhere would say so: the features
+    would sum, the model would predict, and the answer would be quietly wrong by
+    about twenty shots. So a match whose shot counts cannot be read is left
+    blank, score and all."""
+    path = write_season(
+        league_dir, "2026-2027.csv", [*played_rows(), blank_row()]
+    )
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: pd.concat(
+            [understat_fixtures(), pd.DataFrame([
+                played_on("2026-08-26", "Chelsea", "Arsenal", 2.0, 0.0)
+            ])],
+            ignore_index=True,
+        ),
+    )
+    stub_shots(monkeypatch, by_id={
+        "3": sync_understat.UnderstatUnavailable("HTTP 500")
+    })
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+
+    row = result[result["Date"] == "26/08/2026"].iloc[0]
+
+    assert summary["results_filled"] == 0
+    assert summary["needs_results"] == 1
+
+    # Every cell still blank. The score was in hand and was still not written.
+    for column in ("FTHG", "FTAG", "FTR", "HS", "AS", "HST", "AST"):
+        assert pd.isna(row[column]), column
+
+
+def test_a_goalless_draw_with_no_shots_is_not_written(league_dir, monkeypatch, capsys):
+    """A 0-0 where neither side had a shot is not a football match.
+
+    The leagues do record abandoned and awarded games, and writing one as a
+    played 0-0 would put a match in the season that never happened, with a form
+    entry and an Elo result attached to it for both clubs."""
+    path = write_season(
+        league_dir, "2026-2027.csv", [*played_rows(), blank_row()]
+    )
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: pd.concat(
+            [understat_fixtures(), pd.DataFrame([
+                played_on("2026-08-26", "Chelsea", "Arsenal", 0.0, 0.0)
+            ])],
+            ignore_index=True,
+        ),
+    )
+    stub_shots(monkeypatch, by_id={"3": {
+        "home_shots": 0,
+        "away_shots": 0,
+        "home_on_target": 0,
+        "away_on_target": 0,
+    }})
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+    output = capsys.readouterr().out
+
+    row = result[result["Date"] == "26/08/2026"].iloc[0]
+
+    assert summary["results_filled"] == 0
+    assert summary["needs_results"] == 1
+    assert pd.isna(row["FTR"])
+    assert "probably not a match that was played" in output
+
+
+def test_a_real_goalless_draw_is_still_written(league_dir, monkeypatch):
+    """The abandoned-match guard has to be narrow enough to miss a real 0-0.
+
+    0-0 with shots in it is an ordinary result and the commonest one in the
+    league. Skipping those too would quietly stop the pipeline recording any of
+    them."""
+    path = write_season(
+        league_dir, "2026-2027.csv", [*played_rows(), blank_row()]
+    )
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: pd.concat(
+            [understat_fixtures(), pd.DataFrame([
+                played_on("2026-08-26", "Chelsea", "Arsenal", 0.0, 0.0)
+            ])],
+            ignore_index=True,
+        ),
+    )
+    stub_shots(monkeypatch, by_id={"3": {
+        "home_shots": 14,
+        "away_shots": 9,
+        "home_on_target": 0,
+        "away_on_target": 0,
+    }})
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+    row = result[result["Date"] == "26/08/2026"].iloc[0]
+
+    assert summary["results_filled"] == 1
+    assert row["FTR"] == "D"
+    assert row["FTHG"] == 0
+    assert row["HS"] == 14
+
+
+def test_an_existing_result_is_never_overwritten(league_dir, monkeypatch):
+    """football-data.co.uk stays the authority on every row that has a result.
+
+    Two spellings of one match would also mean the season held the match twice,
+    and the second copy would be trained on as though it were a real game."""
+    rows = played_rows()
+
+    # The file says Arsenal won 2-1. Understat says it was a draw.
+    lying = understat_fixtures()
+    lying.loc[0, ["home_goals", "away_goals"]] = [1.0, 1.0]
+
+    path = write_season(league_dir, "2026-2027.csv", rows)
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: lying,
+    )
+    stub_shots(monkeypatch)
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+    row = result[result["Date"] == "12/08/2026"].iloc[0]
+
+    assert row["FTHG"] == 2
+    assert row["FTAG"] == 1
+    assert row["FTR"] == "H"
+    assert summary["results_filled"] == 0
+    assert summary["disagreements"] == 1
+
+
+def test_a_disagreement_is_named_rather_than_resolved(league_dir, monkeypatch, capsys):
+    """Silently picking a winner would be a rewrite with no way back.
+
+    The two sources disagreeing is worth seeing. Which of them is right is not
+    something a script can decide, and it is the one case where filling in the
+    blanks would be actively harmful."""
+    lying = understat_fixtures()
+    lying.loc[0, ["home_goals", "away_goals"]] = [1.0, 1.0]
+
+    write_season(league_dir, "2026-2027.csv", played_rows())
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: lying,
+    )
+    stub_shots(monkeypatch)
+
+    sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    output = capsys.readouterr().out
+
+    assert "sources disagree" in output
+    assert "Arsenal v Chelsea" in output
+    assert "file H vs Understat D" in output
+
+
+def test_a_result_records_that_understat_wrote_it(league_dir, monkeypatch):
+    """Provenance, so a fetched value is told apart from a downloaded one.
+
+    Only the rows this script writes are marked. Nothing writes the other value
+    on purpose: a column that says football-data.co.uk on every historical row
+    would be a column nobody could trust to mean anything."""
+    path = write_season(
+        league_dir,
+        "2026-2027.csv",
+        [
+            {**row, "result_source": "football-data"}
+            if row["FTR"] else row
+            for row in [*played_rows(), blank_row()]
+        ],
+    )
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: pd.concat(
+            [understat_fixtures(), pd.DataFrame([
+                played_on("2026-08-26", "Chelsea", "Arsenal", 2.0, 0.0)
+            ])],
+            ignore_index=True,
+        ),
+    )
+    stub_shots(monkeypatch)
+
+    sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    result = pd.read_csv(path)
+
+    filled = result[result["Date"] == "26/08/2026"].iloc[0]
+    downloaded = result[result["Date"] == "12/08/2026"].iloc[0]
+
+    assert filled["result_source"] == "understat"
+    assert downloaded["result_source"] == "football-data"
+
+
+def test_nothing_is_written_when_the_file_lacks_a_shots_column(league_dir, monkeypatch, capsys):
+    """A file that cannot hold a whole match gets no half of one.
+
+    The guard that stops a score being written without its shot counts has to
+    start with the file not having a shots column to write them into."""
+    rows = [
+        {column: value for column, value in row.items() if column != "HST"}
+        for row in [*played_rows(), blank_row()]
+    ]
+
+    path = write_season(league_dir, "2026-2027.csv", rows)
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: pd.concat(
+            [understat_fixtures(), pd.DataFrame([
+                played_on("2026-08-26", "Chelsea", "Arsenal", 2.0, 0.0)
+            ])],
+            ignore_index=True,
+        ),
+    )
+
+    spent = []
+    monkeypatch.setattr(
+        sync_understat,
+        "get_match_shots",
+        lambda match_id: spent.append(match_id),
+    )
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    output = capsys.readouterr().out
+    result = pd.read_csv(path)
+    row = result[result["Date"] == "26/08/2026"].iloc[0]
+
+    assert summary["results_filled"] == 0
+    assert spent == []
+    assert "has no HST" in output
+    assert "half-complete match" in output
+    assert pd.isna(row["FTR"])
+    assert "HST" not in result.columns
+
+
+def test_a_dry_run_writes_no_result(league_dir, monkeypatch):
+    """--dry-run has to cover the fill, or it reports a change it then makes."""
+    path = write_season(
+        league_dir, "2026-2027.csv", [*played_rows(), blank_row()]
+    )
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: pd.concat(
+            [understat_fixtures(), pd.DataFrame([
+                played_on("2026-08-26", "Chelsea", "Arsenal", 2.0, 0.0)
+            ])],
+            ignore_index=True,
+        ),
+    )
+    stub_shots(monkeypatch)
+
+    summary = sync_understat.sync_league(
+        "PremierLeague", "2026/2027", dry_run=True
+    )
+
+    result = pd.read_csv(path)
+    row = result[result["Date"] == "26/08/2026"].iloc[0]
+
+    # The plan is still reported, so a dry run says what a real run would do.
+    assert summary["results_filled"] == 1
+    assert summary["match_requests"] == 1
+    assert pd.isna(row["FTR"])
+
+
+def test_a_row_with_a_result_but_no_shots_is_reported_not_filled(
+    league_dir, monkeypatch, capsys
+):
+    """A half-complete row that arrived from somewhere else is not left silent.
+
+    The rule that a result is never written without its shot counts protects the
+    rows this script writes. A row that already has a result and no shots is the
+    same corrupt shape arriving by another route, and the features read the blank
+    as zero either way. It is not filled, because the goals on it came from
+    football-data.co.uk and the shots would come from Understat, and mixing the
+    two inside one match is worse than an honest gap. It is named instead."""
+    rows = played_rows()
+
+    # A result with no shot counts, as a hand-edited file or an older script
+    # would leave it. The 19/08 is Understat's own second fixture, so this is a
+    # row the refresh looks at and then declines to touch.
+    rows[1].update({"HS": None, "AS": None, "HST": None, "AST": None})
+
+    path = write_season(league_dir, "2026-2027.csv", rows)
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures(),
+    )
+    stub_shots(monkeypatch)
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    output = capsys.readouterr().out
+    result = pd.read_csv(path)
+    row = result[result["Date"] == "19/08/2026"].iloc[0]
+
+    assert summary["partial_results"] == 1
+    assert "no HS, AS, HST, AST" in output
+    assert "Chelsea v Arsenal" in output
+
+    # Untouched. The goals were not Understat's to confirm and the shots were
+    # not written beside them.
+    assert row["FTHG"] == 0
+    assert row["FTAG"] == 0
+    assert row["FTR"] == "D"
+    assert pd.isna(row["HS"])
+
+
+def test_a_whole_row_is_not_reported_as_partial(league_dir, monkeypatch):
+    """The report is only worth reading if it stays empty in the normal case."""
+    write_season(league_dir, "2026-2027.csv", played_rows())
+
+    monkeypatch.setattr(
+        sync_understat,
+        "get_league_fixtures",
+        lambda slug, season: understat_fixtures(),
+    )
+    stub_shots(monkeypatch)
+
+    summary = sync_understat.sync_league("PremierLeague", "2026/2027")
+
+    assert summary["partial_results"] == 0
