@@ -243,3 +243,62 @@ def get_league_season(slug: str, season: str) -> pd.DataFrame:
     )
 
     return _parse(payload, slug, season)
+
+
+def get_league_fixtures(slug: str, season: str) -> pd.DataFrame:
+    """
+    Reads the whole fixture list for one league season.
+
+    Unlike get_league_season, which returns only finished matches, this keeps
+    the fixtures that have not been played yet. Understat publishes the season
+    as it goes: a match that is still to be arrived at is already listed with
+    its date and sides, and carries no score or xG until it is played. That is
+    the difference between a schedule and a set of results, and reading it is
+    how the remaining fixtures of the current season are picked up.
+
+    Parameters:
+        slug (str): Understat's URL name for the league, e.g. "EPL".
+        season (str): The season label, e.g. "2026/2027".
+
+    Returns:
+        pd.DataFrame: Columns date, home_team, away_team, home_goals,
+        away_goals, home_xg, away_xg and played, for every fixture listed. The
+        score and xG columns are empty where the match is not yet played.
+
+    Raises:
+        UnderstatUnavailable: If the season cannot be read.
+    """
+    start_year = season.split("/")[0]
+
+    page = f"{BASE_URL}/league/{slug}/{start_year}"
+    payload = _get(
+        f"{BASE_URL}/getLeagueData/{slug}/{start_year}",
+        referer=page,
+    )
+
+    matches = payload.get("dates") or []
+
+    if not matches:
+        raise UnderstatUnavailable(
+            f"Understat has no fixtures listed for {slug} {season}. Either "
+            f"the season has not started or Understat has not published it."
+        )
+
+    frame = pd.DataFrame([
+        {
+            "date": pd.to_datetime(match["datetime"]).normalize(),
+            "home_team": match["h"]["title"],
+            "away_team": match["a"]["title"],
+            "home_goals": (match.get("goals") or {}).get("h"),
+            "away_goals": (match.get("goals") or {}).get("a"),
+            "home_xg": (match.get("xG") or {}).get("h"),
+            "away_xg": (match.get("xG") or {}).get("a"),
+            "played": bool(match.get("isResult")),
+        }
+        for match in matches
+    ])
+
+    for column in ("home_goals", "away_goals", "home_xg", "away_xg"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
+    return frame.sort_values("date").reset_index(drop=True)
