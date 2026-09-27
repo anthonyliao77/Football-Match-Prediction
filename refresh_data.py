@@ -1,18 +1,22 @@
 """
 Refreshes the season CSVs from Understat in one command.
 
-A season file needs three things kept current, and they come from two places.
-The fixtures still to come and the xG of the matches already played both come
-from Understat, and sync_understat.py and backfill_xg.py each know how to get one
-of them. The results do not: those come from a football-data.co.uk download,
-which is a manual step this script cannot do and does not pretend to do.
+A season file needs three things kept current. The fixtures still to come and
+the xG of the matches already played both come from Understat, and the results
+of matches played since the last download do too. sync_understat.py and
+backfill_xg.py each know how to get one of the first two, and the first also
+fills in results now, so this is an orchestrator rather than new logic. It calls
+the two existing entry points, aggregates what they report, and ends by saying
+the one thing the person running it needs to know: whether any played match is
+still sitting in the file without a result.
 
-So this is an orchestrator, not new logic. It calls the two existing entry
-points, aggregates what they report, and ends by saying the one thing the
-person running it needs to know, which is how far behind their results download
-is. That number is the reason to run the command rather than either script
-alone: neither of them can see that a fixture has been played since the file was
-last downloaded.
+That number used to mean something different. Results came from a
+football-data.co.uk download, so a match with a blank result meant the download
+was behind, and the count was how far behind. Understat publishes a score as
+soon as a match is over, so the file fills itself in now and a blank result is
+not a chore left undone. It is a match the refresh failed to finish: an
+abandoned or unplayed fixture, or a request that did not come back. That is why
+the report no longer tells you to go and download anything.
 
 Order is fixtures then xG. The two do not overlap, since the fixtures step only
 adds rows with no result and the xG step only fills empty xG cells on rows that
@@ -26,15 +30,14 @@ normal enough event that it should not cost you the other two. The exit status
 is non-zero if any league failed, which is what makes this safe to put on a
 schedule.
 
-A league that failed is counted as having an unknown number of stale matches,
-not as having none, and the table says so with a dash. The alternative was a
-refresh that reported every league as clean while one of them had not been
+A league that failed is counted as having an unknown number of unwritten
+matches, not as having none, and the table says so with a dash. The alternative
+was a refresh that reported every league as clean while one of them had not been
 looked at, which is the failure mode a staleness check exists to prevent.
 
---require-fresh extends the exit status to cover a stale results download. A
-failed refresh is loud, but the likelier way for a scheduled run to be quietly
-useless is for both halves to succeed while the results download is a fortnight
-old, and nothing about that run looks wrong.
+--require-fresh extends the exit status to cover an unfinished match. A failed
+refresh is loud, but the likelier way for a scheduled run to be quietly useless
+is for everything to succeed while one match sits unwritten.
 """
 
 import argparse
@@ -55,8 +58,10 @@ class Summary:
 
     Attributes:
         failed (int): Leagues that could not be refreshed.
-        stale (int): Played matches with a blank result, across checked leagues.
-        unchecked (int): Leagues whose stale count could not be established.
+        stale (int): Played matches left with a blank result, across
+            checked leagues. The name is the old one and stays, since it
+            reads as what it is: the season not being current.
+        unchecked (int): Leagues whose count could not be established.
     """
 
     failed: int
@@ -73,8 +78,8 @@ def parse_arguments() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Refresh the fixtures and the xG of every league from Understat. "
-            "Results still come from a football-data.co.uk download."
+            "Refresh the fixtures, the results and the xG of every league "
+            "from Understat. Existing values on file are never overwritten."
         )
     )
 
@@ -106,9 +111,10 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help=(
             "Exit non-zero when any played match is missing its result, not only "
-            "when a league fails. For a scheduled refresh, where a stale results "
-            "download is the failure worth catching: the run is green, the CSVs "
-            "are green, and the model trains on a month-old season."
+            "when a league fails. For a scheduled refresh, where a match left "
+            "unwritten is the failure worth catching: the run is green, the CSVs "
+            "are green, and the model trains on a season that is quietly short "
+            "a game."
         ),
     )
 
@@ -142,6 +148,10 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
         # Defaulting to 0 would report a league as clean for the one thing we
         # did not manage to check.
         "needs_results": None,
+        "results_filled": 0,
+        "results_added": 0,
+        "disagreements": 0,
+        "match_requests": 0,
         "xg_filled": 0,
         "rows": 0,
         "rows_unmatched": 0,
@@ -156,9 +166,16 @@ def refresh_league(league: str, season: str | None, dry_run: bool) -> dict:
     try:
         fixtures = sync_league(league, season, dry_run=dry_run)
 
-        row["added"] = fixtures["added"]
-        row["rescheduled"] = fixtures["rescheduled"]
-        row["needs_results"] = fixtures["needs_results"]
+        for key in (
+            "added",
+            "rescheduled",
+            "needs_results",
+            "results_filled",
+            "results_added",
+            "disagreements",
+            "match_requests",
+        ):
+            row[key] = fixtures[key]
     except (UnderstatUnavailable, FileNotFoundError) as error:
         row["error"] = str(error)
 
@@ -189,11 +206,14 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
     verb = "Would change" if dry_run else "Changed"
 
     print(f"\n{verb}, by league:")
-    print("A stale count is a played match with no result on file. An xG count")
-    print("of zero on a fresh download is the normal case: it only fills cells")
-    print("that are empty.\n")
+    print("Unwritten is a played match with no result on file. Results is how")
+    print("many were filled this run. An xG count of zero is the normal")
+    print("case: it only fills cells that are empty.\n")
 
-    header = f"{'League':<16}{'Fixtures':>10}{'Re-dated':>10}{'xG':>8}{'Stale':>8}"
+    header = (
+        f"{'League':<16}{'Fixtures':>10}{'Re-dated':>10}{'Results':>9}"
+        f"{'xG':>8}{'Unwritten':>11}"
+    )
 
     print(header)
     print("-" * len(header))
@@ -208,17 +228,22 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
 
         if row["needs_results"] is None:
             unchecked += 1
-            stale_text = "-"
+            unwritten = "-"
         else:
             stale += row["needs_results"]
-            stale_text = str(row["needs_results"])
+            unwritten = str(row["needs_results"])
+
+        results = (
+            row.get("results_filled", 0) + row.get("results_added", 0)
+        )
 
         line = (
             f"{row['league']:<16}"
             f"{row['added']:>10}"
             f"{row['rescheduled']:>10}"
+            f"{results:>9}"
             f"{row['xg_filled']:>8}"
-            f"{stale_text:>8}"
+            f"{unwritten:>11}"
         )
 
         # The error goes after the counts, not instead of them. A league that
@@ -228,17 +253,27 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
         if row["error"]:
             line += f"   FAILED: {row['error']}"
 
+        if row.get("disagreements"):
+            line += f"   ({row['disagreements']} source disagreement(s))"
+
         print(line)
+
+    print(
+        "\nResults filled from Understat. Unwritten is a played match still "
+        "holding no\nresult, which is a fault to look at rather than a "
+        "download to make."
+    )
 
     if stale:
         print(
             f"\n{stale} played "
-            f"{'match has' if stale == 1 else 'matches have'} a result upstream "
-            f"but a blank result in the CSV."
+            f"{'match is' if stale == 1 else 'matches are'} still without a "
+            f"result in the CSV."
         )
         print(
-            "Download the season from football-data.co.uk and replace the file, "
-            "then run this again."
+            "These are the ones the refresh could not finish: an abandoned or "
+            "unplayed\nfixture, a match with no shots to read, or a request "
+            "that failed. Each is\nlisted by the fixtures step."
         )
     elif not failed and not unchecked:
         print("\nEvery played match on file has its result.")
@@ -247,9 +282,9 @@ def report(rows: list[dict], dry_run: bool) -> Summary:
         total = len(rows)
 
         print(
-            f"\nThe stale count is unknown for {unchecked} of {total} "
-            f"{'league' if total == 1 else 'leagues'}, shown as '-', because "
-            "the refresh failed before it could count them. A dash is not a zero."
+            f"\nThe count is unknown for {unchecked} of {total} "
+            f"{'league' if total == 1 else 'leagues'}, shown as '-', because the "
+            "refresh failed before it could count them. A dash is not a zero."
         )
 
     if failed:

@@ -61,19 +61,24 @@ def stub(monkeypatch, fixtures=None, xg=None, fixtures_error=None, xg_error=None
     """
     calls = {"fixtures": [], "xg": []}
 
-    def run_fixtures(league, season, dry_run=False):
+    def run_fixtures(league, season, dry_run=False, **kwargs):
         calls["fixtures"].append((league, season, dry_run))
 
         if fixtures_error is not None:
             raise fixtures_error
 
-        return {
-            "added": 3,
-            "already_present": 10,
-            "rescheduled": 1,
-            "needs_results": 4,
-            "unknown_teams": [],
-        }
+        if fixtures is not None:
+            return fixtures
+
+        return fixtures_summary(
+            added=3,
+            already_present=10,
+            rescheduled=1,
+            needs_results=4,
+            results_filled=2,
+            results_added=1,
+            match_requests=3,
+        )
 
     def run_xg(league, dry_run=False):
         calls["xg"].append((league, dry_run))
@@ -93,6 +98,27 @@ def stub(monkeypatch, fixtures=None, xg=None, fixtures_error=None, xg_error=None
     monkeypatch.setattr(refresh_data, "backfill_league_xg", run_xg)
 
     return calls
+
+
+# One place that knows what sync_league reports. Each test then states only the
+# counts it is about, so adding a count to the real contract does not mean
+# editing eleven stubs, and a test cannot pass against a shape the real step no
+# longer returns.
+def fixtures_summary(**counts):
+    summary = {
+        "added": 0,
+        "already_present": 0,
+        "rescheduled": 0,
+        "needs_results": 0,
+        "results_filled": 0,
+        "results_added": 0,
+        "disagreements": 0,
+        "match_requests": 0,
+        "unknown_teams": [],
+    }
+    summary.update(counts)
+
+    return summary
 
 
 def test_every_league_is_refreshed(monkeypatch, league_dirs):
@@ -116,12 +142,7 @@ def test_both_steps_run_for_a_league(monkeypatch, league_dirs):
         refresh_data,
         "sync_league",
         lambda league, season, dry_run=False: order.append("fixtures")
-        or {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        },
+        or fixtures_summary(),
     )
 
     monkeypatch.setattr(
@@ -181,12 +202,11 @@ def test_one_league_failing_does_not_stop_the_others(monkeypatch, league_dirs):
         if league == "LaLiga":
             raise UnderstatUnavailable("Understat has no fixtures listed for SP1")
 
-        return {
-            "added": 1,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=1,
+            rescheduled=0,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -254,12 +274,11 @@ def test_the_exit_status_is_non_zero_when_a_league_fails(
         if league == "SerieA":
             raise UnderstatUnavailable("nothing listed")
 
-        return {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=0,
+            rescheduled=0,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -289,13 +308,14 @@ def test_a_clean_run_exits_zero(monkeypatch, league_dirs):
     assert refresh_data.main() == 0
 
 
-def test_the_stale_count_is_the_headline(monkeypatch, league_dirs, capsys):
-    """The number the person running it needs is how far behind they are.
+def test_the_count_of_unwritten_matches_is_the_headline(monkeypatch, league_dirs, capsys):
+    """The number the person running it needs is how many matches have no
+    result written.
 
     Neither underlying script can report this. A fixture added before kickoff
     sits in the file with a blank result, matches on date and sides, and is
-    counted as already present by both of them, so nothing anywhere says the
-    results download is behind. The refresh exists largely to say it.
+    counted as already present by both of them, so nothing anywhere says a
+    played match is still unwritten. The refresh exists largely to say it.
     """
     stub(monkeypatch)
 
@@ -305,8 +325,7 @@ def test_the_stale_count_is_the_headline(monkeypatch, league_dirs, capsys):
 
     output = capsys.readouterr().out
 
-    assert "12 played matches have a result upstream" in output
-    assert "football-data.co.uk" in output
+    assert "12 played matches are still without a result" in output
 
 
 def test_a_clean_run_does_not_tell_you_to_go_and_fix_something(
@@ -318,12 +337,11 @@ def test_a_clean_run_does_not_tell_you_to_go_and_fix_something(
     not have, which is the fastest way to make people stop reading a report.
     """
     def run_fixtures(league, season, dry_run=False):
-        return {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=0,
+            rescheduled=0,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -350,12 +368,11 @@ def test_a_failed_league_is_visible_in_the_table(monkeypatch, league_dirs, capsy
         if league == "LaLiga":
             raise UnderstatUnavailable("nothing listed")
 
-        return {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=0,
+            rescheduled=0,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -387,12 +404,11 @@ def test_a_failed_league_does_not_produce_an_all_clear(monkeypatch, league_dirs,
         if league == "PremierLeague":
             raise UnderstatUnavailable("nothing listed")
 
-        return {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=0,
+            rescheduled=0,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -413,7 +429,7 @@ def test_a_failed_league_does_not_produce_an_all_clear(monkeypatch, league_dirs,
     output = capsys.readouterr().out
 
     assert "Every played match on file has its result" not in output
-    assert "stale count is unknown" in output
+    assert "count is unknown" in output
 
 
 def test_a_league_that_was_not_checked_shows_a_dash_not_a_zero(monkeypatch, league_dirs, capsys):
@@ -422,12 +438,11 @@ def test_a_league_that_was_not_checked_shows_a_dash_not_a_zero(monkeypatch, leag
         if league == "PremierLeague":
             raise UnderstatUnavailable("nothing listed")
 
-        return {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=0,
+            rescheduled=0,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -514,12 +529,11 @@ def test_require_fresh_exits_zero_when_there_is_nothing_to_fetch(
     """The flag has to be able to pass, or a schedule wired to it disables
     itself after the first run by alerting on every success."""
     def run_fixtures(league, season, dry_run=False):
-        return {
-            "added": 3,
-            "rescheduled": 1,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=3,
+            rescheduled=1,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -550,12 +564,11 @@ def test_require_fresh_also_fails_on_an_unchecked_league(monkeypatch, league_dir
         if league == "PremierLeague":
             raise UnderstatUnavailable("nothing listed")
 
-        return {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 0,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=0,
+            rescheduled=0,
+            needs_results=0,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -582,12 +595,11 @@ def test_the_require_fresh_flag_is_parsed_by_the_command_line(monkeypatch, leagu
     flag that was never added to the parser would pass all of them. This one
     goes through the real parser."""
     def run_fixtures(league, season, dry_run=False):
-        return {
-            "added": 0,
-            "rescheduled": 0,
-            "needs_results": 7,
-            "unknown_teams": [],
-        }
+        return fixtures_summary(
+            added=0,
+            rescheduled=0,
+            needs_results=7,
+        )
 
     monkeypatch.setattr(refresh_data, "sync_league", run_fixtures)
 
@@ -606,3 +618,65 @@ def test_the_require_fresh_flag_is_parsed_by_the_command_line(monkeypatch, leagu
     )
 
     assert refresh_data.main() == 1
+
+
+def test_results_filled_and_added_are_reported_as_one_column(
+    monkeypatch, league_dirs, capsys
+):
+    """Filling a blank row and adding a missing one are both a result arriving,
+    and the reader wants the total rather than two numbers to add up."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        needs_results=2,
+        results_filled=2,
+        results_added=1,
+        match_requests=3,
+    ))
+
+    monkeypatch.setattr(refresh_data, "parse_arguments", lambda: argparse_namespace())
+
+    refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    # The stubbed summary is applied to all three leagues, so the total is
+    # three times one run's counts: 9 results arrived, 6 matches are still
+    # unwritten. The two are unrelated numbers. One is progress and the other
+    # is what is left, and the old report had only the second of them.
+    assert "Results filled from Understat" in output
+    assert "6 played matches are still without a result" in output
+
+
+def test_a_disagreement_is_surfaced_in_the_table(monkeypatch, league_dirs, capsys):
+    """The fixtures step names the match, but only in its own output.
+
+    A refresh is often run where the detail has scrolled past, and a source
+    disagreement is the one thing in that output a human has to look at."""
+    stub(monkeypatch, fixtures=fixtures_summary(
+        disagreements=2,
+        needs_results=0,
+    ))
+
+    monkeypatch.setattr(refresh_data, "parse_arguments", lambda: argparse_namespace())
+
+    refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    assert "2 source disagreement(s)" in output
+
+
+def test_the_column_no_longer_calls_a_result_gap_stale(monkeypatch, league_dirs, capsys):
+    """The old heading was advice-free but the legend under it was not.
+
+    It read as a thing to go and fix by downloading, which is exactly the
+    reading the new behaviour removed."""
+    stub(monkeypatch, fixtures=fixtures_summary(needs_results=0))
+
+    monkeypatch.setattr(refresh_data, "parse_arguments", lambda: argparse_namespace())
+
+    refresh_data.main()
+
+    output = capsys.readouterr().out
+
+    assert "Unwritten" in output
+    assert "Every played match on file has its result" in output
