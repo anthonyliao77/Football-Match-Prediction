@@ -46,6 +46,12 @@ BROWSER_USER_AGENT = (
 
 REQUEST_TIMEOUT = 30
 
+# The outcomes Understat records for a shot that a reader would count as being
+# on target. ShotOnPost is the spelling the endpoint uses, which is not Post,
+# and getting it wrong quietly undercounts by one for every match with a shot
+# off the woodwork.
+ON_TARGET = frozenset({"Goal", "SavedShot", "ShotOnPost"})
+
 
 class UnderstatUnavailable(RuntimeError):
     """Raised when a league season cannot be read from Understat."""
@@ -218,6 +224,34 @@ def _parse(payload: dict, league: str, season: str) -> pd.DataFrame:
     return frame
 
 
+def _league_payload(slug: str, season: str) -> dict:
+    """
+    Reads the JSON behind one league season, with every fixture in it.
+
+    Both of the readers below want this same endpoint. It answers with the whole
+    season at once, the matches that have been played carrying a score and xG and
+    the ones still to come carrying neither, so "the schedule" and "the results"
+    are a difference of which rows you keep rather than a difference of which
+    request you make. Asking twice meant paying twice for one answer.
+
+    Parameters:
+        slug (str): Understat's URL name for the league, e.g. "EPL".
+        season (str): The season label, e.g. "2026/2027".
+
+    Returns:
+        dict: The decoded JSON body.
+    """
+    # The endpoint takes the start year alone: 2026/2027 is asked for as 2026.
+    start_year = season.split("/")[0]
+
+    page = f"{BASE_URL}/league/{slug}/{start_year}"
+
+    return _get(
+        f"{BASE_URL}/getLeagueData/{slug}/{start_year}",
+        referer=page,
+    )
+
+
 def get_league_season(slug: str, season: str) -> pd.DataFrame:
     """
     Reads one league season of expected-goals data.
@@ -233,16 +267,7 @@ def get_league_season(slug: str, season: str) -> pd.DataFrame:
     Raises:
         UnderstatUnavailable: If the season cannot be read.
     """
-    # The endpoint takes the start year alone: 2026/2027 is asked for as 2026.
-    start_year = season.split("/")[0]
-
-    page = f"{BASE_URL}/league/{slug}/{start_year}"
-    payload = _get(
-        f"{BASE_URL}/getLeagueData/{slug}/{start_year}",
-        referer=page,
-    )
-
-    return _parse(payload, slug, season)
+    return _parse(_league_payload(slug, season), slug, season)
 
 
 def get_league_fixtures(slug: str, season: str) -> pd.DataFrame:
@@ -262,19 +287,14 @@ def get_league_fixtures(slug: str, season: str) -> pd.DataFrame:
 
     Returns:
         pd.DataFrame: Columns date, home_team, away_team, home_goals,
-        away_goals, home_xg, away_xg and played, for every fixture listed. The
-        score and xG columns are empty where the match is not yet played.
+        away_goals, home_xg, away_xg, played and understat_id, for every
+        fixture listed. The score and xG columns are empty where the match is
+        not yet played.
 
     Raises:
         UnderstatUnavailable: If the season cannot be read.
     """
-    start_year = season.split("/")[0]
-
-    page = f"{BASE_URL}/league/{slug}/{start_year}"
-    payload = _get(
-        f"{BASE_URL}/getLeagueData/{slug}/{start_year}",
-        referer=page,
-    )
+    payload = _league_payload(slug, season)
 
     matches = payload.get("dates") or []
 
@@ -294,6 +314,10 @@ def get_league_fixtures(slug: str, season: str) -> pd.DataFrame:
             "home_xg": (match.get("xG") or {}).get("h"),
             "away_xg": (match.get("xG") or {}).get("a"),
             "played": bool(match.get("isResult")),
+            # Carried so the shot counts for one match can be fetched without
+            # having to find it again by date and sides. Understat's id is the
+            # only handle it offers, and the per-match endpoint takes nothing else.
+            "understat_id": match.get("id"),
         }
         for match in matches
     ])
@@ -302,3 +326,61 @@ def get_league_fixtures(slug: str, season: str) -> pd.DataFrame:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
     return frame.sort_values("date").reset_index(drop=True)
+
+
+def get_match_shots(match_id) -> dict:
+    """
+    Reads the shot counts for one match.
+
+    The league endpoint carries goals and xG but no shot counts, so shots come
+    from the per-match endpoint, which lists every shot as an event. The counts
+    are taken by counting those events rather than by reading a total, because
+    there is no total to read.
+
+    A shot counts as on target when it was a goal, was saved, or hit the woodwork.
+    That is the usual definition and it is what football-data.co.uk uses, though
+    the two sources still disagree on roughly a third of matches by a shot or
+    two, so this is a close reading rather than an exact one.
+
+    One request is made per match, so this is for filling gaps and not for
+    re-deriving what the CSVs already hold.
+
+    Parameters:
+        match_id: Understat's id for the match.
+
+    Returns:
+        dict: home_shots, away_shots, home_on_target and away_on_target.
+
+    Raises:
+        UnderstatUnavailable: If the match cannot be read, or the response has
+            no shots key at all, which means the endpoint's shape has changed
+            rather than the match having had no shots.
+    """
+    page = f"{BASE_URL}/match/{match_id}"
+
+    payload = _get(f"{BASE_URL}/getMatchData/{match_id}", referer=page)
+
+    # A missing key and an empty list mean different things. An empty list is a
+    # match nobody had a shot in. A missing key is an endpoint that has stopped
+    # answering in the shape it is documented to answer in, and counting it as
+    # zero would write a made-up 0-0 into a real match.
+    if not isinstance(payload, dict) or "shots" not in payload:
+        raise UnderstatUnavailable(
+            f"{BASE_URL}/getMatchData/{match_id} returned no shots key, so the "
+            f"endpoint's response format may have changed."
+        )
+
+    shots = payload.get("shots") or {}
+
+    home = shots.get("h") or []
+    away = shots.get("a") or []
+
+    def on_target(events) -> int:
+        return sum(1 for event in events if event.get("result") in ON_TARGET)
+
+    return {
+        "home_shots": len(home),
+        "away_shots": len(away),
+        "home_on_target": on_target(home),
+        "away_on_target": on_target(away),
+    }
