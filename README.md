@@ -966,20 +966,33 @@ Two consequences for anyone reading the files by hand:
 * Row count is no longer a proxy for how much data a season has. The number of
   played matches is.
 
-### Adding the rest of the schedule
+### Adding the schedule and filling in results
 
-`sync_understat.py` fills in the upcoming fixtures for a season from Understat,
-which lists a full season even before kickoff:
+`sync_understat.py` keeps a season CSV in step with Understat: it adds the
+fixtures still to come, and it writes the results of matches that have since been
+played. Understat lists a full season before kickoff, and publishes a score as
+soon as a match ends, so one script covers both ends of a season's life:
 
 ```bash
 python sync_understat.py --league PremierLeague --season 2026/2027
 ```
 
-Use `--dry-run` first to see what would be added, and `--season` to target a
+Use `--dry-run` first to see what would change, and `--season` to target a
 specific season. The rules it works by:
 
-* It **only adds**. A match already in the file is left exactly as it is, so a
-  result already recorded from football-data.co.uk is never overwritten.
+* It **only adds or fills blanks**. A cell that already holds a value is left
+  exactly as it is, so every result downloaded from football-data.co.uk is
+  never overwritten. Understat fills the gaps the download has not reached yet,
+  which is why the two sources coexist and neither one has to be re-downloaded.
+* A match the two sources **disagree** on is left alone and reported. The value
+  on file wins, and the difference is printed rather than resolved, because
+  which of them is right is not something a script can decide.
+* A row that already carries a result but is **missing shot counts** is left
+  alone and reported, by the same reasoning: the goals on it came from
+  football-data.co.uk and the shots would come from Understat, and mixing the two
+  inside one match is worse than an honest gap. The all-or-nothing rule below
+  protects the rows this script writes; this is the same corrupt shape arriving
+  by another route, and it is named rather than tolerated.
 * It matches on date, home team and away team, and translates Understat's club
   names through `TEAM_NAME_MAP` first.
 * It writes only the columns the file already has, so a season that has never
@@ -990,10 +1003,57 @@ specific season. The rules it works by:
   again. A league does play the same pairing more than once in a season, so only
   rows with no result are eligible to be re-dated; by the time the return leg is
   listed, the first one has been played and is left alone.
-* A match that **has been played but has no result on file** is reported, not
-  written. That covers both a fixture the file has never heard of and, more
-  often, one that was added before kickoff and is still sitting there blank.
-  See below for why the second case matters.
+* A played match the file has never heard of is **added**, decided, with its
+  shots. More often it is a fixture added before kickoff and still sitting there
+  blank.
+
+#### A result is never written without its shots
+
+This is the rule the whole result-filling half turns on. Understat's league
+payload carries goals but not shots; the shot counts live in a separate
+per-match endpoint. So filling a result takes one request per match filled, and
+those requests are spent **only** on matches that are actually being written —
+a season already on file costs none.
+
+If those counts cannot be read, the match is left blank, **score included**. That
+looks like throwing away a result that is sitting right there, and it is
+deliberate: `src/features.py` coerces a missing number to zero on purpose, so a
+row given a score and no shots is not a row with blanks in it. It is a row
+claiming the club managed no shots, the rolling features would sum it happily,
+and the answer would be quietly wrong by about twenty shots with nothing
+anywhere saying so. A blank row is honest and gets dropped; a plausible wrong
+row gets trained on. A 0-0 where neither side recorded a shot is also left
+blank, since that is what an abandoned or unplayed fixture looks like. Real
+0-0 draws have shots in them and are written normally.
+
+Rows this script fills are marked in a `result_source` column, so a fetched
+value is told apart from a downloaded one. Historical rows are left unmarked on
+purpose: a column claiming football-data.co.uk on every row of every season
+would be a column nobody could trust to mean anything.
+
+#### The two sources do not agree exactly, and that is fine
+
+Measured over the 31 played Premier League 2026/2027 matches, comparing what
+Understat reports against the football-data.co.uk CSV already on file:
+
+| Column | Exact | Typical gap |
+| --- | --- | --- |
+| `HS` / `AS` total shots | 59 of 62 sides | 1 |
+| `HST` / `AST` shots on target | 45 of 62 sides | 1 |
+
+Almost every disagreement is a single shot, with one side out by two. The shot
+vocabulary is fully accounted for, so this is two vendors counting the same
+event slightly differently rather than a parse losing a category. Goals
+disagree nowhere at all.
+
+That gap is the reason the precedence rule is "existing values always win" and
+not "Understat is more accurate". It also has a consequence worth stating
+plainly: once a match is filled from Understat, the rolling shot features
+average rows from two vendors, and a five-match form window can contain a ±1
+difference that no amount of care at the boundary would remove. The feature is a
+form signal and not a shot audit, so the noise is well inside its tolerance, but
+it is a real seam in the data and the `result_source` column exists so it can be
+located rather than remembered.
 
 Running it twice changes nothing, which is what makes it safe to put on a
 schedule.
@@ -1009,38 +1069,40 @@ This runs both Understat-backed steps for every league, fixtures then xG, and
 prints one table:
 
 ```text
-League            Fixtures  Re-dated      xG   Stale
-----------------------------------------------------
-PremierLeague            0         0       0       0
-LaLiga                   0         0       0       0
-SerieA                   0         0       0       0
+League            Fixtures  Re-dated  Results      xG  Unwritten
+----------------------------------------------------------------
+PremierLeague            0         0        0       0         0
+LaLiga                   0         0        0       0         0
+SerieA                   0         0        0       0         0
 ```
 
 `--league` narrows it to one league and `--season` to one season of fixtures.
 The xG step always covers the whole league, since it only fills cells that are
 empty and narrowing it would hide gaps in older seasons.
 
-A **Stale** count is the number of played matches Understat has a result for and
-the CSV does not. That is the one figure worth reading, and it is the reason the
-command exists. It is the only place in the project that can tell you the results
-download is behind, because a fixture added before kickoff sits in the file with
-a blank result, matches on date and sides, and is counted as *already present*
-by both underlying scripts. Nothing else says so. Meanwhile a blank row reads as
-a match that has not happened, so it is dropped from the rolling features and
-from the Elo, and a club's recent form goes stale quietly.
+An **Unwritten** count is the number of played matches the CSV has no result for.
+That is the one figure worth reading, and it is the reason the command exists.
+It is the only place in the project that can say a played match is missing,
+because a fixture added before kickoff sits in the file with a blank result,
+matches on date and sides, and is counted as *already present* by both
+underlying scripts. Nothing else says so. Meanwhile a blank row reads as a match
+that has not happened, so it is dropped from the rolling features and from the
+Elo, and a club's recent form goes stale quietly.
 
-**Results are the one manual step.** Understat has the goals but not the shots,
-and results are football-data.co.uk's to provide, so the fix for a non-zero
-Stale count is to download the season and replace the file, then rerun. The
-refresh never writes a result.
+**Results come from Understat too.** A blank result is no longer a chore left
+undone, and the refresh no longer tells you to download anything. Understat
+publishes a score as soon as a match ends, so the file fills itself in now, and
+a non-zero Unwritten count means the refresh could not *finish*: an abandoned or
+unplayed fixture, a match whose shot counts could not be read, or a request that
+did not come back. Each one is listed by name by the fixtures step.
 
 The exit status is non-zero if any league could not be refreshed, and a league
 that fails does not stop the others. Understat publishes no API and no
 availability, so treat a failure as retryable rather than as a broken dataset.
 
-A league that failed shows a **dash** in the Stale column rather than a zero,
-because the refresh died before it could count. A dash is not a zero, and the
-run says so instead of reporting the leagues it did manage to check as proof
+A league that failed shows a **dash** in the Unwritten column rather than a
+zero, because the refresh died before it could count. A dash is not a zero, and
+the run says so instead of reporting the leagues it did manage to check as proof
 that everything is current.
 
 ### On a schedule
@@ -1051,9 +1113,10 @@ python refresh_data.py --require-fresh
 
 The default exit status catches a league failing, which is the loud failure. It
 does not catch the likelier one: both Understat steps succeed, the tables are
-clean, and the results download is a fortnight old, so the run is green and the
-model trains on a month-old season. `--require-fresh` extends the non-zero exit
-to a non-zero Stale count, and to any league whose Stale count is unknown.
+clean, and one match is still sitting unwritten, so the run is green and the
+model trains on a season that is quietly short a game. `--require-fresh`
+extends the non-zero exit to a non-zero Unwritten count, and to any league whose
+count is unknown.
 
 That makes it the flag to use from cron, since the whole point of a scheduled
 refresh is to fail loudly. Alert on a non-zero status, not on the output:
@@ -1063,10 +1126,9 @@ refresh is to fail loudly. Alert on a non-zero status, not on the output:
              && .venv/bin/python predict.py --league PremierLeague --home Arsenal --away Leeds
 ```
 
-Note the results download is still a manual step, so a `--require-fresh` run
-will start failing the moment a matchday passes and the file is not replaced.
-That is the correct behaviour: it is telling you the model is about to be
-trained on results that are not there yet.
+A `--require-fresh` run will start failing the moment a matchday ends and the
+next refresh has not yet run. That is the correct behaviour: it is telling you
+the model is about to be trained on results that are not there yet.
 
 ### How the merge behaves
 
