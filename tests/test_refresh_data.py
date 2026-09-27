@@ -8,6 +8,8 @@ the number it leads with is the one a person running it needs, which is how far
 behind their results download is.
 """
 
+import sys
+
 import pandas as pd
 import pytest
 
@@ -17,11 +19,13 @@ from backfill_xg import UnderstatDataError
 from config import LEAGUES
 
 
-def argparse_namespace(league="all", dry_run=False):
+def argparse_namespace(league="all", dry_run=False, require_fresh=False):
     """Builds a stand-in for the parsed command line."""
     import argparse
 
-    return argparse.Namespace(league=league, season=None, dry_run=dry_run)
+    return argparse.Namespace(
+        league=league, season=None, dry_run=dry_run, require_fresh=require_fresh
+    )
 
 
 @pytest.fixture
@@ -485,3 +489,120 @@ def test_a_partly_failed_league_still_shows_what_it_wrote(monkeypatch, league_di
     assert "3" in line.split("FAILED")[0]
     assert "1" in line.split("FAILED")[0]
     assert "xG:" in line
+
+
+def test_require_fresh_exits_non_zero_when_results_are_missing(
+    monkeypatch, league_dirs
+):
+    """The stale download is the failure a scheduled run is most likely to
+    miss, because the refresh itself succeeds. Both halves report clean, the
+    exit status is zero, and the model trains on last month."""
+    stub(monkeypatch)
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(require_fresh=True),
+    )
+
+    assert refresh_data.main() == 1
+
+
+def test_require_fresh_exits_zero_when_there_is_nothing_to_fetch(
+    monkeypatch, league_dirs
+):
+    """The flag has to be able to pass, or a schedule wired to it disables
+    itself after the first run by alerting on every success."""
+    def run_fixtures(league, season, dry_run=False):
+        return {
+            "added": 3,
+            "rescheduled": 1,
+            "needs_results": 0,
+            "unknown_teams": [],
+        }
+
+    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+
+    monkeypatch.setattr(
+        refresh_data,
+        "backfill_league_xg",
+        lambda league, dry_run=False: {
+            "xg_filled": 12,
+            "rows": 700,
+            "rows_unmatched": 0,
+        },
+    )
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(require_fresh=True),
+    )
+
+    assert refresh_data.main() == 0
+
+
+def test_require_fresh_also_fails_on_an_unchecked_league(monkeypatch, league_dirs):
+    """An unknown stale count is not a passing one. Requiring fresh has to
+    refuse to certify a league it could not look at, or it is a worse guard
+    than not asking."""
+    def run_fixtures(league, season, dry_run=False):
+        if league == "PremierLeague":
+            raise UnderstatUnavailable("nothing listed")
+
+        return {
+            "added": 0,
+            "rescheduled": 0,
+            "needs_results": 0,
+            "unknown_teams": [],
+        }
+
+    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+
+    monkeypatch.setattr(
+        refresh_data,
+        "backfill_league_xg",
+        lambda league, dry_run=False: {
+            "xg_filled": 0,
+            "rows": 0,
+            "rows_unmatched": 0,
+        },
+    )
+
+    monkeypatch.setattr(
+        refresh_data,
+        "parse_arguments",
+        lambda: argparse_namespace(require_fresh=True),
+    )
+
+    assert refresh_data.main() == 1
+
+def test_the_require_fresh_flag_is_parsed_by_the_command_line(monkeypatch, league_dirs):
+    """The other tests replace the parsed arguments wholesale, which means a
+    flag that was never added to the parser would pass all of them. This one
+    goes through the real parser."""
+    def run_fixtures(league, season, dry_run=False):
+        return {
+            "added": 0,
+            "rescheduled": 0,
+            "needs_results": 7,
+            "unknown_teams": [],
+        }
+
+    monkeypatch.setattr(refresh_data, "add_fixtures", run_fixtures)
+
+    monkeypatch.setattr(
+        refresh_data,
+        "backfill_league_xg",
+        lambda league, dry_run=False: {
+            "xg_filled": 0,
+            "rows": 0,
+            "rows_unmatched": 0,
+        },
+    )
+
+    monkeypatch.setattr(
+        sys, "argv", ["refresh_data.py", "--require-fresh", "--dry-run"]
+    )
+
+    assert refresh_data.main() == 1

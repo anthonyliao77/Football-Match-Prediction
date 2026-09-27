@@ -30,6 +30,11 @@ A league that failed is counted as having an unknown number of stale matches,
 not as having none, and the table says so with a dash. The alternative was a
 refresh that reported every league as clean while one of them had not been
 looked at, which is the failure mode a staleness check exists to prevent.
+
+--require-fresh extends the exit status to cover a stale results download. A
+failed refresh is loud, but the likelier way for a scheduled run to be quietly
+useless is for both halves to succeed while the results download is a fortnight
+old, and nothing about that run looks wrong.
 """
 
 import argparse
@@ -94,6 +99,17 @@ def parse_arguments() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Report what would change without writing the CSVs.",
+    )
+
+    parser.add_argument(
+        "--require-fresh",
+        action="store_true",
+        help=(
+            "Exit non-zero when any played match is missing its result, not only "
+            "when a league fails. For a scheduled refresh, where a stale results "
+            "download is the failure worth catching: the run is green, the CSVs "
+            "are green, and the model trains on a month-old season."
+        ),
     )
 
     return parser.parse_args()
@@ -254,7 +270,8 @@ def main() -> int:
     Runs the refresh.
 
     Returns:
-        int: 0 if every league was refreshed, 1 otherwise.
+        int: 0 on success. 1 if a league failed, or if --require-fresh was
+            given and any league is stale or was never checked.
     """
     arguments = parse_arguments()
 
@@ -267,7 +284,13 @@ def main() -> int:
 
     summary = report(rows, arguments.dry_run)
 
-    return 1 if summary.failed else 0
+    if summary.failed:
+        return 1
+
+    if arguments.require_fresh and (summary.stale or summary.unchecked):
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
