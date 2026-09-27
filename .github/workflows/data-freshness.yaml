@@ -2,6 +2,18 @@ name: Data freshness
 
 on:
   workflow_dispatch:
+  schedule:
+    # 07:17 UTC, which is late morning in Europe: the previous evening's
+    # European finishes have all been played out, and the results are on
+    # Understat by now. The odd minute avoids the top of the hour, which is
+    # where every scheduled workflow on the platform lands at once.
+    #
+    # This is the monitor, not the thing that fixes anything. It runs an hour
+    # before data-refresh.yaml and reads a settled tree, so it is reporting on
+    # yesterday's commit rather than racing it. Kept separate from the writer
+    # because the permissions differ, and a check is worth more when it cannot
+    # write.
+    - cron: "17 7 * * *"
 
 # Read-only on purpose. This is a check, not a writer: the refresh it runs is
 # always a dry run, so a compromised dependency in requirements.txt has no path
