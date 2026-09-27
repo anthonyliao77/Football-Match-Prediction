@@ -1228,9 +1228,20 @@ overwriting it.
 
 #### Two things to know about this running unattended
 
-**Turn on failure emails.** In *Settings → Actions → Notifications*, enable email
-for failed workflows. Without it a red run is a page nobody opens, and the check
-is only worth what its failures are worth. No code is involved.
+**Turn on failure emails.** This is a personal setting, not a repository one:
+repository *Settings → Actions* has no notification option at all, which is the
+easy place to go looking. The control is at
+<https://github.com/settings/notifications>, under **System** → **Actions**, where
+the dropdown reads "Don't notify" until changed. Set it to **Email** and tick
+**Only notify for failed workflows**.
+
+It does nothing unless you are also **watching** the repository — GitHub only
+delivers workflow notifications for repos you watch, so the setting can look
+correct and still stay silent. The account's email address has to be verified
+too, since that is where the notification goes.
+
+Without this, a red run is a page nobody opens, and the check is only worth what
+its failures are worth. No code is involved.
 
 **GitHub disables scheduled workflows after 60 days of repository inactivity,**
 and this is a public repository, so the rule applies. Football is quiet over the
@@ -1238,8 +1249,11 @@ summer — the three leagues finish in May and resume in August, which is roughl
 10 to 12 weeks, and the refresh will find nothing to commit for most of it. When
 the new season starts, both workflows will be sitting disabled and the data will
 silently stop updating. Re-enable them from the Actions tab, and they will run
-on their own again. This is deliberate: a keep-alive commit whose only purpose
-is to defeat an inactivity timer is more machinery than two clicks in August.
+on their own again. Re-enabling also re-points notifications, since a scheduled
+workflow's runs are reported to whoever re-enabled it, so confirm the email
+above is still the address you want before doing it. This is deliberate: a
+keep-alive commit whose only purpose is to defeat an inactivity timer is more
+machinery than two clicks in August.
 
 The scheduled runs are free. GitHub-hosted runners are not billed for public
 repositories at all, on any plan — the monthly minute allowances apply to
