@@ -44,6 +44,12 @@ The project follows a chronological football prediction pipeline:
 * [x] Fixture prediction command line
 * [x] Interactive prediction session
 * [x] Elo and form context alongside the predicted probabilities
+* [x] Full-season schedule sync from Understat
+* [x] Result backfill from Understat, existing values never overwritten
+* [x] Shot counts from Understat's per-match endpoint
+* [x] A refresh that reports what is still unwritten, with an exit status for schedules
+* [x] Automated daily refresh, committed to `main` without a pull request
+* [x] A separate read-only freshness check that no longer depends on the refresh
 
 ### Planned
 
@@ -52,7 +58,6 @@ The project follows a chronological football prediction pipeline:
 * [ ] Walk-forward validation across multiple seasons
 * [ ] Probability calibration
 * [ ] Additional leagues and historical data
-* [ ] Automated data refreshing
 * [ ] Comparison between classification and goal-based prediction models
 
 ---
@@ -97,6 +102,19 @@ The offline half of that, which is a separate command:
 ```text
 Football-Data CSVs  +  Understat  ──►  backfill_xg.py  ──►  CSVs with xG
 ```
+
+And the two commands that keep the CSVs current between seasons:
+
+```text
+Understat league list  ──►  sync_understat.py  ──►  full schedule + results + shots
+Understat              ──►  refresh_data.py    ──►  runs both of the above
+```
+
+`refresh_data.py` is the one to run. It calls `sync_understat.py` and
+`backfill_xg.py` for every league in turn, reports what each one found, and
+returns an exit status a schedule can act on. The other two exist so that
+either half can be run on its own while working out why the report is saying
+what it is saying.
 
 ---
 
@@ -797,7 +815,7 @@ without them invites reading more into it than it can carry.
 ## Project Structure
 
 ```text
-Football-Prediction-Model/
+Football-Match-Prediction/
 ├── config.py
 ├── train.py
 ├── predict.py
@@ -816,33 +834,42 @@ Football-Prediction-Model/
 │   ├── elo.py
 │   ├── features.py
 │   ├── predict.py
+│   ├── results.py
 │   ├── training.py
-│   └── understat_loader.py
+│   ├── understat_client.py
+│   ├── understat_loader.py
+│   └── xg.py
+├── .github/
+│   └── workflows/
+│       ├── data-freshness.yaml
+│       ├── data-refresh.yaml
+│       └── tests.yaml
 ├── .gitignore
 └── README.md
 ```
 
 ### Main Files
 
-| File                      | Purpose                                                                             |
-| ------------------------- | ----------------------------------------------------------------------------------- |
-| `config.py`               | Configuration, league settings, team-name mappings, and model feature configuration |
-| `train.py`                | Main command-line entry point for training                                          |
-| `predict.py`              | Command-line entry point for predicting a single fixture, and the interactive session |
-| `update_data.py`          | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
-| `backfill_xg.py`          | Command-line entry point for writing Understat xG into the season CSVs              |
-| `sync_understat.py`       | Command-line entry point that adds the rest of a season's schedule and fills in results |
-| `refresh_data.py`         | Runs the fixture and xG refresh for every league and reports what is stale           |
-| `requirements.txt`        | Lists the Python dependencies and their tested versions                             |
-| `src/api_football.py`     | Fetches API-Football fixtures and merges them into the local CSVs                   |
-| `src/data_loader.py`      | Loads match data and performs season-based splitting                                |
-| `src/elo.py`              | Calculates football seasons and Elo ratings                                         |
-| `src/features.py`         | Creates rolling form and xG/xGA features                                            |
-| `src/predict.py`          | Fits the models on the training seasons and predicts an unplayed fixture            |
-| `src/understat_client.py` | Reads Understat's per-season JSON endpoint                                          |
-| `src/understat_loader.py` | Retrieves and prepares Understat data, one season at a time                          |
-| `src/xg.py`               | Defines the xG columns and the provenance value written with them                    |
-| `src/training.py`         | Handles feature engineering, model training, prediction, and evaluation             |
+| File                         | Purpose                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| `config.py`                  | Configuration, league settings, team-name mappings, and model feature configuration |
+| `train.py`                   | Main command-line entry point for training                                          |
+| `predict.py`                 | Command-line entry point for predicting a single fixture, and the interactive session |
+| `update_data.py`             | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
+| `backfill_xg.py`             | Command-line entry point for writing Understat xG into the season CSVs              |
+| `sync_understat.py`          | Command-line entry point that adds the rest of a season's schedule and fills in results |
+| `refresh_data.py`            | Runs the fixture and xG refresh for every league and reports what is still unwritten |
+| `requirements.txt`           | Lists the Python dependencies and their tested versions                             |
+| `src/api_football.py`        | Fetches API-Football fixtures and merges them into the local CSVs                   |
+| `src/data_loader.py`         | Loads match data, performs season-based splitting, and writes CSVs atomically       |
+| `src/elo.py`                 | Calculates football seasons and Elo ratings                                         |
+| `src/features.py`            | Creates rolling form and xG/xGA features                                            |
+| `src/predict.py`             | Fits the models on the training seasons and predicts an unplayed fixture            |
+| `src/results.py`             | The result and shot count columns, and the provenance value written with them       |
+| `src/understat_client.py`    | Reads Understat's per-season league endpoint and its per-match shots endpoint        |
+| `src/understat_loader.py`    | Retrieves and prepares Understat data, one season at a time                          |
+| `src/xg.py`                  | Defines the xG columns and the provenance value written with them                    |
+| `src/training.py`            | Handles feature engineering, model training, prediction, and evaluation             |
 | `tests/`                  | Test suite, run with `python -m pytest`                                             |
 | `tests/factories.py`      | Builds the synthetic leagues the prediction tests run against                      |
 | `football_data/`          | Contains local historical football match data                                       |
@@ -1105,7 +1132,7 @@ zero, because the refresh died before it could count. A dash is not a zero, and
 the run says so instead of reporting the leagues it did manage to check as proof
 that everything is current.
 
-### On a schedule
+### Before a prediction
 
 ```bash
 python refresh_data.py --require-fresh
@@ -1118,8 +1145,8 @@ model trains on a season that is quietly short a game. `--require-fresh`
 extends the non-zero exit to a non-zero Unwritten count, and to any league whose
 count is unknown.
 
-That makes it the flag to use from cron, since the whole point of a scheduled
-refresh is to fail loudly. Alert on a non-zero status, not on the output:
+Gate a prediction on it, and chain the two so the prediction cannot run on a
+season that is short a game:
 
 ```cron
 17 7 * * *  cd /path/to/repo && .venv/bin/python refresh_data.py --require-fresh \
@@ -1127,18 +1154,16 @@ refresh is to fail loudly. Alert on a non-zero status, not on the output:
 ```
 
 A `--require-fresh` run will start failing the moment a matchday ends and the
-next refresh has not yet run. That is the correct behaviour: it is telling you
-the model is about to be trained on results that are not there yet.
+next refresh has not yet run. That is the correct behaviour here: it is telling
+you the model is about to be trained on results that are not there yet.
 
-### A check on a schedule needs a grace period
+### As a monitor
 
-The run above is the right guard before a **prediction**, where the CSV is about
-to be read and every unwritten match is a match the model will be missing. It is
-the wrong guard for a monitor that runs on a timer, for a reason that has nothing
-to do with correctness: committed data goes stale after every matchday and only
-becomes current when someone refreshes and commits it. Asked daily, a strict
-check is red most of the time, and a red check people have learned to ignore is
-worse than no check.
+The same command is the wrong guard for a check that runs on a timer, for a
+reason that has nothing to do with correctness. Committed data goes stale after
+every matchday and only becomes current once the refresh is run and its output
+committed. Asked daily, a strict check is red most of the time, and a red check
+people have learned to ignore is worse than no check.
 
 `--max-age-days N` narrows the failure to a match that has been sitting
 unwritten for more than N days:
@@ -1166,10 +1191,59 @@ match ages, and it cannot turn unknown into fine.
 Ages are measured against UTC, so a local run and a scheduled one agree about
 what "three days old" means.
 
-`.github/workflows/data-freshness.yaml` runs exactly that command, read-only. It
-is manual-only (`workflow_dispatch`) until the runner's reachability of
-Understat has been confirmed, since that is the one thing about running it off
-this machine that cannot be checked from this machine.
+### The two scheduled workflows
+
+Both run daily and both can be started by hand from the Actions tab.
+
+| Workflow               | Time (UTC) | Permission       | What it does                                                       |
+| ---------------------- | ---------- | ---------------- | ------------------------------------------------------------------ |
+| `data-freshness.yaml`  | 07:17      | `contents: read` | Dry-runs the refresh with a 7-day grace period, and fails if a match has been unwritten longer than that |
+| `data-refresh.yaml`    | 08:17      | `contents: write`| Refreshes for real and commits the diff to `main`                  |
+
+The check runs first and reads yesterday's settled tree. What it is for is the
+failure the refresh cannot fix by itself: a match abandoned at Understat, a
+league unreachable for a week, a push rejected because the branch moved. Those
+are the cases where data is still unwritten the next morning despite a refresh
+having run, and a check that only ever agreed with the writer would never notice
+them.
+
+**The refresh commits to `main` directly, with no pull request.** The diff is
+only ever season CSVs, and the values in them are the same Understat figures the
+project already trusts, so there is nothing in it for a human to decide. Every
+committed value carries its origin in the `result_source` column, so a row that
+was not on file before is still traceable after it lands.
+
+`data-refresh.yaml` holds `contents: write`, which is the one genuinely widened
+permission here, and it is what the guard is for: if anything other than a
+season CSV is ever staged, the job refuses to commit and reports what it found.
+The refresh cannot write code into the repository, so the realistic worst case
+is bad numbers in `football_data/` rather than a backdoor.
+
+A league that cannot be read does not stop the job at the point it fails. Each
+league is written all-or-nothing, so the ones that did read cleanly are still
+committed, and the job goes red afterwards so the failure is not mistaken for a
+quiet day. The push is neither forced nor rebased: a rejected push means someone
+landed on `main` mid-run, and the next run reconciles against it rather than
+overwriting it.
+
+#### Two things to know about this running unattended
+
+**Turn on failure emails.** In *Settings → Actions → Notifications*, enable email
+for failed workflows. Without it a red run is a page nobody opens, and the check
+is only worth what its failures are worth. No code is involved.
+
+**GitHub disables scheduled workflows after 60 days of repository inactivity,**
+and this is a public repository, so the rule applies. Football is quiet over the
+summer — the three leagues finish in May and resume in August, which is roughly
+10 to 12 weeks, and the refresh will find nothing to commit for most of it. When
+the new season starts, both workflows will be sitting disabled and the data will
+silently stop updating. Re-enable them from the Actions tab, and they will run
+on their own again. This is deliberate: a keep-alive commit whose only purpose
+is to defeat an inactivity timer is more machinery than two clicks in August.
+
+The scheduled runs are free. GitHub-hosted runners are not billed for public
+repositories at all, on any plan — the monthly minute allowances apply to
+private repositories only.
 
 ### How the merge behaves
 
@@ -1391,7 +1465,14 @@ Investigate whether predicted probabilities require calibration using techniques
 
 ### Automated Data Updates
 
-Automate the process of retrieving newly completed fixtures and updating the historical dataset. The fetching and merging half of this is implemented in `src/api_football.py` and driven by `update_data.py`; what is not yet automated is scheduling it, and adding a data-freshness check that fails training when the CSVs are stale.
+Understat fetching and merging is implemented in `src/understat_client.py` and
+`src/api_football.py`, driven by `sync_understat.py` and `backfill_xg.py`. It
+runs unattended: `data-refresh.yaml` fills the season CSVs from Understat every
+morning and commits the diff, and `data-freshness.yaml` independently checks that
+nothing has been left unwritten for a week. What is still not automated is
+anything involving API-Football, whose key is a personal credential and whose
+fixtures are a subset of what Understat already provides.
+
 
 ---
 
