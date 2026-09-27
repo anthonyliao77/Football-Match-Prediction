@@ -1,0 +1,128 @@
+name: Data refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    # An hour after the freshness check, so the two never contend for the same
+    # tree. 08:17 UTC, for the same reason the check is at 07:17: the previous
+    # evening's European matches are all over, and not everyone schedules on
+    # the hour.
+    - cron: "17 8 * * *"
+
+# Write access, which is the whole difference between this and the check. The
+# guard step below is what earns it: only a season CSV is ever allowed to be
+# committed, so a compromised dependency in requirements.txt can poison the
+# numbers in football_data/ but cannot commit a backdoor to the repository.
+permissions:
+  contents: write
+
+concurrency:
+  group: data-refresh
+  # Not cancel-in-progress. A run that is part-way through writing is holding
+  # data in memory, and killing it to start another would trade a duplicate
+  # check for a torn one. Daily runs do not overlap anyway; this is here for
+  # the case where a run is queued and a manual one is started on top of it.
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    # Long enough for three leagues and twenty-odd seasons of Understat reads
+    # over a throttled connection, short enough that a hang is reported rather
+    # than waited on.
+    timeout-minutes: 10
+
+    steps:
+      # A schedule always runs on the default branch, but workflow_dispatch does
+      # not: it can be started from any branch, and the push below targets main
+      # by name. Without this, a refresh started from a feature branch would
+      # write that branch's CSVs onto main.
+      - name: Only refresh main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::This workflow only refreshes from main, and this run was started from ${GITHUB_REF}."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.7"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # The exit code is captured rather than allowed to stop the job, because
+      # the refresh is already safe to run when a league fails: it writes each
+      # league all-or-nothing, so a league that could not be read leaves the
+      # committed data untouched while the others still save their work. Failing
+      # here first would throw that away.
+      #
+      # A failure is re-raised at the end, after the good data is committed.
+      - name: Refresh from Understat
+        id: refresh
+        run: |
+          set +e
+          python refresh_data.py
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No match on file was missing or changed. Nothing to commit."
+            exit 0
+          fi
+
+          # The point of the write permission. sync_understat and backfill_xg
+          # both write through one helper in src/data_loader.py that replaces a
+          # CSV atomically, so a season file is the only tracked path a refresh
+          # can change. Anything else means something is writing files this
+          # workflow did not expect, and a .tmp file means a write was
+          # interrupted part-way and left its staging file behind.
+          unexpected=$(git diff --cached --name-only | grep -v '^football_data/.*\.csv$' || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::A refresh changed something other than a season CSV. Refusing to commit:"
+            echo "$unexpected"
+            exit 1
+          fi
+
+          {
+            echo "data: refresh results and xG from Understat"
+            echo
+            echo "Written by .github/workflows/data-refresh.yaml. Every value here came from"
+            echo "Understat and is recorded in the result_source column, so a value that was"
+            echo "not on file before is still traceable after it lands."
+            echo
+            git diff --cached --stat
+          } > "$RUNNER_TEMP/commit-message"
+
+          git commit -F "$RUNNER_TEMP/commit-message"
+          # No force, and no rebase. If something landed on main while this run
+          # was in flight, the push is rejected and the job fails. That is the
+          # correct outcome: the next run starts from the newer main and
+          # reconciles against it, rather than this one quietly overwriting it.
+          git push origin HEAD:main
+
+      # Only reached when every step above succeeded, so it cannot mask a
+      # failure in the guard or the commit.
+      - name: Fail if a league could not be read
+        if: success()
+        run: |
+          code='${{ steps.refresh.outputs.exit_code }}'
+          if [ "$code" != "0" ]; then
+            echo "::error::The refresh exited ${code}: at least one league failed. Any league that did succeed has been committed."
+            exit 1
+          fi
