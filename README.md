@@ -337,7 +337,8 @@ June 2026 → 2025/26
 July 2026 → 2026/27
 ```
 
-The latest complete season is held out for validation.
+The most recent season before the one being predicted is held out for
+validation, and the season under prediction is used for neither.
 
 For example:
 
@@ -756,10 +757,20 @@ afterwards, so roughly 2.7s for a single command-line prediction. That is a
 deliberate trade for a codebase with no artifact to go stale, and it is the
 thing to revisit first if this ever needs to be quick.
 
-The model is fitted on **all** seasons, including the one `train.py` holds out
-for validation, because a prediction should use every match available. The
-trade is that the reported validation scores no longer describe this model
-exactly, and no claim is made that they do.
+The model is fitted on every season **before** the validation season, and the
+season being predicted is in neither the fit nor the validation split. A season
+after the validation season is not quietly folded into training: fitting on it
+would train the model on the very matches it is about to predict, and the
+reported scores would stop describing the model being used.
+
+The rolling features and Elo ratings behind a prediction are a separate
+question from the fit. Those are built from every match played so far,
+including the season being predicted, because a result that has already happened
+is real information about how a team is playing. A fixture is only ever a date
+and two clubs, so a fixture that has not been played is dropped before the
+feature and Elo passes: those passes are chronological and would read a row
+with no result as a zero for both sides, spending a slot in every rolling window
+that follows it.
 
 Caveats travel with the prediction rather than being buried here. A team with a
 thin history, a date older than the data, a season boundary and an unmeasured
@@ -776,6 +787,8 @@ Football-Prediction-Model/
 ├── train.py
 ├── predict.py
 ├── update_data.py
+├── backfill_xg.py
+├── add_fixtures.py
 ├── requirements.txt
 ├── football_data/
 │   ├── LaLiga/
@@ -802,12 +815,13 @@ Football-Prediction-Model/
 | `predict.py`              | Command-line entry point for predicting a single fixture, and the interactive session |
 | `update_data.py`          | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
 | `backfill_xg.py`          | Command-line entry point for writing Understat xG into the season CSVs              |
+| `add_fixtures.py`         | Command-line entry point for filling the rest of a season's schedule into the CSVs  |
 | `requirements.txt`        | Lists the Python dependencies and their tested versions                             |
 | `src/api_football.py`     | Fetches API-Football fixtures and merges them into the local CSVs                   |
 | `src/data_loader.py`      | Loads match data and performs season-based splitting                                |
 | `src/elo.py`              | Calculates football seasons and Elo ratings                                         |
 | `src/features.py`         | Creates rolling form and xG/xGA features                                            |
-| `src/predict.py`          | Fits the models on all seasons and predicts an unplayed fixture                    |
+| `src/predict.py`          | Fits the models on the training seasons and predicts an unplayed fixture            |
 | `src/understat_client.py` | Reads Understat's per-season JSON endpoint                                          |
 | `src/understat_loader.py` | Retrieves and prepares Understat data, one season at a time                          |
 | `src/xg.py`               | Defines the xG columns and the provenance value written with them                    |
@@ -913,6 +927,55 @@ runtime. Everything xG-related is read from the CSVs and topped up in memory.
 The CSVs in `football_data/` are the single source of truth for training. They
 come from Football-Data.co.uk and can be augmented with fixtures from
 API-Football using `update_data.py`.
+
+### A season CSV holds the whole season, played and upcoming
+
+Each season file holds that season's full fixture list, not just the results.
+A fixture that has not been played yet is present with a date and two clubs,
+and blank everywhere else: result, goals, shots and xG. This is what makes the
+season being predicted known in advance, and it is why the whole file is 380
+rows rather than the handful played so far.
+
+Those blank rows are inert. Everything downstream filters on a result being
+present, so an unplayed fixture never reaches the rolling form, the xG columns
+or the Elo pass. `test_a_pending_fixture_in_the_csv_cannot_change_a_prediction`
+holds that line: padding a season file with the rest of the schedule cannot move
+a prediction.
+
+Two consequences for anyone reading the files by hand:
+
+* A blank `FTR` means **not yet played**, not a nil-nil draw. A nil-nil draw has
+  `FTR` of `D`.
+* Row count is no longer a proxy for how much data a season has. The number of
+  played matches is.
+
+### Adding the rest of the schedule
+
+`add_fixtures.py` fills in the upcoming fixtures for a season from Understat,
+which lists a full season even before kickoff:
+
+```bash
+python add_fixtures.py --league PremierLeague --season 2026/2027
+```
+
+Use `--dry-run` first to see what would be added, and `--season` to target a
+specific season. The rules it works by:
+
+* It **only adds**. A match already in the file is left exactly as it is, so a
+  result already recorded from football-data.co.uk is never overwritten.
+* It matches on date, home team and away team, and translates Understat's club
+  names through `TEAM_NAME_MAP` first.
+* It writes only the columns the file already has, so a season that has never
+  been given an xG column does not acquire an empty one.
+* A club the season file has never seen is reported and left out, because two
+  spellings of one club would split its Elo rating and its form in two.
+* A match Understat reports as played but the CSV is missing is **listed, not
+  written**. Results belong to football-data.co.uk; a missing result is a gap in
+  that source rather than a scheduling question.
+
+Running it twice changes nothing, which is what makes it safe to put on a
+schedule. Refresh the *results* from football-data.co.uk and the xG from
+`backfill_xg.py` as the season runs.
 
 ### How the merge behaves
 
