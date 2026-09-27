@@ -470,3 +470,107 @@ def test_explain_prints_every_feature(league_dir):
 
     for column in FEATURE_COLUMNS:
         assert column in rendered
+
+
+def test_a_pending_fixture_in_the_csv_cannot_change_a_prediction(league_dir):
+    """A fixture awaiting kickoff must be inert, not a scoreless draw.
+
+    The season CSVs hold the whole schedule, so most of the current season's
+    rows have no result. The feature and Elo passes are chronological and read
+    such a row as a zero for both sides, which would spend a slot in every
+    rolling window that follows it and pull both ratings down. The predictor
+    drops them first, so a season CSV padded out with the rest of the schedule
+    has to give the same answer as one holding only played matches.
+    """
+    rows = build_rows()
+    home, away = unplayed_pair(rows)
+
+    before = trained_predictor(league_dir, rows)
+
+    plain = before.predict(home, away)
+
+    # The rest of the season, in the file the season was read from, dated after
+    # the last played match, which is where the pending fixtures sit.
+    path = league_dir / "2024-2025.csv"
+    season = pd.read_csv(path)
+
+    last = pd.to_datetime(season["Date"], dayfirst=True).max()
+
+    pending = pd.DataFrame([
+        {
+            "Date": (last + pd.Timedelta(days=7 * (index + 1))).strftime(
+                "%d/%m/%Y"
+            ),
+            "Div": "E0",
+            "HomeTeam": "Arsenal" if index % 2 else "Chelsea",
+            "AwayTeam": "Chelsea" if index % 2 else "Arsenal",
+            "FTHG": None,
+            "FTAG": None,
+            "FTR": None,
+        }
+        for index in range(12)
+    ])
+
+    pd.concat([season, pending], ignore_index=True).to_csv(path, index=False)
+
+    after = Predictor("PremierLeague")
+
+    # The fixtures are in the file, and the predictor is holding none of them.
+    on_disk = load_data(str(league_dir))
+
+    assert int(on_disk["FTR"].isna().sum()) == len(pending)
+    assert int(after.dataframe["FTR"].isna().sum()) == 0
+
+    assert after.predict(home, away).probabilities == plain.probabilities
+    assert after.predict(home, away).elo == plain.elo
+
+
+def test_the_season_under_prediction_is_not_fitted_on(league_dir):
+    """The season being predicted is held out of the fit.
+
+    Fitting on it would train the model on the matches it is about to predict,
+    and the scores src/training.py reports would stop describing the model that
+    produced them.
+    """
+    rows = build_rows()
+    predictor = trained_predictor(league_dir, rows)
+
+    loaded = load_data(str(league_dir))
+
+    played = int(loaded["FTR"].notna().sum())
+
+    # Every played match is a candidate, and the fit takes none of the
+    # validation season or the season under prediction.
+    assert predictor.training_matches < played
+
+    seasons = set(
+        loaded["Date"].map(lambda date: f"{date.year}/{date.year + 1}").unique()
+    )
+
+    assert len(seasons) > 2
+    assert predictor.validation_season in seasons
+    assert predictor.season_under_prediction in seasons
+
+
+def test_the_fit_stops_before_the_validation_season(league_dir):
+    """The number of fitted rows matches the seasons src/training.py uses.
+
+    The two have to agree, or the reported scores describe a different model
+    from the one a prediction comes from.
+    """
+    from src.data_loader import split_by_season
+    from src.features import create_features
+
+    rows = build_rows()
+    predictor = trained_predictor(league_dir, rows)
+
+    loaded = load_data(str(league_dir))
+    loaded = loaded[loaded["FTR"].notna()]
+
+    prepared = create_features(loaded)
+    train_data, _ = split_by_season(
+        prepared,
+        validation_season=predictor.validation_season,
+    )
+
+    assert len(train_data) == predictor.training_matches

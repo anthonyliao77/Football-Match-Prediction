@@ -36,7 +36,12 @@ from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
 from config import FEATURE_COLUMNS, LEAGUES
-from src.data_loader import load_data
+from src.data_loader import (
+    load_data,
+    played_matches,
+    prediction_season,
+    previous_season,
+)
 from src.elo import (
     HOME_ADVANTAGE,
     calculate_expected_score,
@@ -210,6 +215,16 @@ class Predictor:
         """
         Loads the league, builds its features and fits both models.
 
+        The models are fitted only on the seasons before the validation season.
+        The season being predicted is in neither the fit nor the validation
+        split, so the scores src/training.py reports describe this model rather
+        than a differently scoped one.
+
+        The rolling features and Elo ratings used to place a fixture are built
+        from every match played so far, including the season being predicted.
+        A result that has already happened is real information about how a team
+        is playing, and withholding it would only make the prediction worse.
+
         Parameters:
             league (str): The league to prepare, as a LEAGUES key or alias.
 
@@ -218,13 +233,19 @@ class Predictor:
         """
         self.league = resolve_league(league)
 
-        self.dataframe = load_data(LEAGUES[self.league]["football_data"])
+        self.dataframe = played_matches(
+            load_data(LEAGUES[self.league]["football_data"])
+        )
 
         self.teams = sorted(
             set(self.dataframe["HomeTeam"]) | set(self.dataframe["AwayTeam"])
         )
 
         self.data_through = self.dataframe["Date"].max()
+
+        self.season_under_prediction = prediction_season(self.dataframe)
+
+        self.validation_season = previous_season(self.season_under_prediction)
 
         self.appearances = Counter()
 
@@ -234,19 +255,30 @@ class Predictor:
 
         prepared = create_elo_features(create_features(self.dataframe))
 
-        self._random_forest = self._fit_random_forest(prepared)
-        self._xgb, self._encoder = self._fit_xgb(prepared)
+        # The fit stops at the training boundary. A season at or after the
+        # validation season is left out, so a fixture in the season being
+        # predicted can never be one of the model's own training rows.
+        boundary = int(self.validation_season.split("/")[0])
+
+        training = prepared[
+            prepared["Date"].map(get_season).str[:4].astype(int) < boundary
+        ]
+
+        self.training_matches = len(training)
+
+        self._random_forest = self._fit_random_forest(training)
+        self._xgb, self._encoder = self._fit_xgb(training)
 
     def _fit_random_forest(self, prepared: pd.DataFrame):
         """
-        Fits the Random Forest on every season.
+        Fits the Random Forest on the training seasons.
 
-        The hyperparameters are the ones src/training.py reports scores for, so
-        a prediction comes from the model that was evaluated rather than a
-        differently configured one.
+        The hyperparameters are the ones src/training.py reports scores for, and
+        the training seasons are the ones it fits on, so a prediction comes from
+        the model that was evaluated rather than a differently configured one.
 
         Parameters:
-            prepared (pd.DataFrame): The full feature frame.
+            prepared (pd.DataFrame): The training rows of the feature frame.
 
         Returns:
             RandomForestClassifier: The fitted model.
@@ -267,10 +299,10 @@ class Predictor:
 
     def _fit_xgb(self, prepared: pd.DataFrame):
         """
-        Fits XGBoost on every season, with its labels encoded.
+        Fits XGBoost on the training seasons, with its labels encoded.
 
         Parameters:
-            prepared (pd.DataFrame): The full feature frame.
+            prepared (pd.DataFrame): The training rows of the feature frame.
 
         Returns:
             tuple: The fitted model and the encoder that maps its integer
