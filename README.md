@@ -789,6 +789,7 @@ Football-Prediction-Model/
 ├── update_data.py
 ├── backfill_xg.py
 ├── add_fixtures.py
+├── refresh_data.py
 ├── requirements.txt
 ├── football_data/
 │   ├── LaLiga/
@@ -816,6 +817,7 @@ Football-Prediction-Model/
 | `update_data.py`          | Command-line entry point for augmenting the local CSVs with API-Football fixtures    |
 | `backfill_xg.py`          | Command-line entry point for writing Understat xG into the season CSVs              |
 | `add_fixtures.py`         | Command-line entry point for filling the rest of a season's schedule into the CSVs  |
+| `refresh_data.py`         | Runs the fixture and xG refresh for every league and reports what is stale           |
 | `requirements.txt`        | Lists the Python dependencies and their tested versions                             |
 | `src/api_football.py`     | Fetches API-Football fixtures and merges them into the local CSVs                   |
 | `src/data_loader.py`      | Loads match data and performs season-based splitting                                |
@@ -969,13 +971,57 @@ specific season. The rules it works by:
   been given an xG column does not acquire an empty one.
 * A club the season file has never seen is reported and left out, because two
   spellings of one club would split its Elo rating and its form in two.
-* A match Understat reports as played but the CSV is missing is **listed, not
-  written**. Results belong to football-data.co.uk; a missing result is a gap in
-  that source rather than a scheduling question.
+* A **postponed** fixture has its date rewritten in place rather than added
+  again. A league does play the same pairing more than once in a season, so only
+  rows with no result are eligible to be re-dated; by the time the return leg is
+  listed, the first one has been played and is left alone.
+* A match that **has been played but has no result on file** is reported, not
+  written. That covers both a fixture the file has never heard of and, more
+  often, one that was added before kickoff and is still sitting there blank.
+  See below for why the second case matters.
 
 Running it twice changes nothing, which is what makes it safe to put on a
-schedule. Refresh the *results* from football-data.co.uk and the xG from
-`backfill_xg.py` as the season runs.
+schedule.
+
+### Keeping the data current
+
+```bash
+python refresh_data.py --dry-run   # report
+python refresh_data.py             # write
+```
+
+This runs both Understat-backed steps for every league, fixtures then xG, and
+prints one table:
+
+```text
+League            Fixtures  Re-dated      xG   Stale
+----------------------------------------------------
+PremierLeague            0         0       0       0
+LaLiga                   0         0       0       0
+SerieA                   0         0       0       0
+```
+
+`--league` narrows it to one league and `--season` to one season of fixtures.
+The xG step always covers the whole league, since it only fills cells that are
+empty and narrowing it would hide gaps in older seasons.
+
+A **Stale** count is the number of played matches Understat has a result for and
+the CSV does not. That is the one figure worth reading, and it is the reason the
+command exists. It is the only place in the project that can tell you the results
+download is behind, because a fixture added before kickoff sits in the file with
+a blank result, matches on date and sides, and is counted as *already present*
+by both underlying scripts. Nothing else says so. Meanwhile a blank row reads as
+a match that has not happened, so it is dropped from the rolling features and
+from the Elo, and a club's recent form goes stale quietly.
+
+**Results are the one manual step.** Understat has the goals but not the shots,
+and results are football-data.co.uk's to provide, so the fix for a non-zero
+Stale count is to download the season and replace the file, then rerun. The
+refresh never writes a result.
+
+The exit status is non-zero if any league could not be refreshed, and a league
+that fails does not stop the others. Understat publishes no API and no
+availability, so treat a failure as retryable rather than as a broken dataset.
 
 ### How the merge behaves
 
