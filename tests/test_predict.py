@@ -574,3 +574,313 @@ def test_the_fit_stops_before_the_validation_season(league_dir):
     )
 
     assert len(train_data) == predictor.training_matches
+
+
+def scheduled(rows, index, date, home=None, away=None):
+    """
+    Returns an unplayed row, optionally renamed and re-dated.
+
+    This is how a fixture the season still has to play is put on the schedule:
+    a date, two clubs, and nothing else filled in.
+    """
+    row = dict(rows[index])
+
+    row.update({
+        "Date": pd.Timestamp(date).strftime("%d/%m/%Y"),
+        "FTHG": None,
+        "FTAG": None,
+        "FTR": None,
+    })
+
+    if home:
+        row["HomeTeam"] = home
+
+    if away:
+        row["AwayTeam"] = away
+
+    return row
+
+
+def add_upcoming(league_dir, rows, extra, season="2024-2025.csv"):
+    """Appends unplayed fixtures to a season file already on disk."""
+    path = league_dir / season
+
+    existing = pd.read_csv(path)
+
+    pd.concat(
+        [existing, pd.DataFrame(extra)], ignore_index=True
+    ).to_csv(path, index=False)
+
+    return path
+
+
+def test_a_club_awaiting_its_first_match_can_be_predicted(league_dir):
+    """A promoted club's debut is the fixture most worth being able to ask about.
+
+    The club is in the season file, on a fixture, and has no result anywhere,
+    because it has not played. Taking the club list from the played rows alone
+    meant the list said the club did not exist, so its debut could not be
+    predicted at all, and neither could any fixture it appears in for the rest
+    of the season.
+    """
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    debut = scheduled(
+        rows, 0, "2025-01-04", home="Leeds United", away="Arsenal"
+    )
+
+    add_upcoming(league_dir, rows, [debut])
+
+    predictor = Predictor("PremierLeague")
+
+    assert "Leeds United" in predictor.teams
+    assert predictor.appearances["Leeds United"] == 0
+
+    prediction = predictor.predict("Leeds United", "Arsenal")
+
+    assert prediction.home == "Leeds United"
+
+    # No history means the Elo has nowhere to come from, so it starts at the
+    # initial rating and the prediction says so rather than implying otherwise.
+    assert prediction.elo["home"] == 1500.0
+    assert any(
+        "Leeds United has 0 matches" in note for note in prediction.notes
+    )
+
+
+def test_the_reported_team_count_still_describes_played_matches(league_dir):
+    """The "N matches, M teams" line must not count a club with no matches.
+
+    Both halves describe played data, and including a club still awaiting its
+    debut would make the line read 45 matches and 9 teams when it is really 8
+    clubs and one name on a fixture list.
+    """
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    played = Predictor("PremierLeague")
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [scheduled(rows, 0, "2025-01-04", home="Leeds United", away="Arsenal")],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    assert len(predictor.teams) == len(predictor.played_teams) + 1
+
+    prediction = predictor.predict("Leeds United", "Arsenal")
+
+    assert prediction.teams == len(played.played_teams)
+    assert prediction.matches == len(played.dataframe)
+
+
+def test_the_default_date_is_the_next_fixture_rather_than_a_guess(league_dir):
+    """A season file knows when its next fixture is, so the default should say so.
+
+    A fixed offset from the last match is wrong across every international
+    break, at the end of a season, and any time a fixture is moved. It was
+    right most weeks in midwinter, which is the problem: a default that is
+    usually right hides being wrong.
+    """
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    predictor = Predictor("PremierLeague")
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [
+            scheduled(rows, 0, "2025-03-01", home="Arsenal", away="Chelsea"),
+            scheduled(rows, 1, "2025-01-11", home="Chelsea", away="Arsenal"),
+        ],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    # The earliest fixture on the schedule, not last played plus seven days.
+    assert predictor.default_date() == pd.Timestamp("2025-01-11")
+
+    assert predictor.default_date() != (
+        predictor.data_through + pd.Timedelta(days=7)
+    )
+
+
+def test_the_default_date_is_when_the_two_clubs_next_meet(league_dir):
+    """Naming two clubs should give the date of their next meeting.
+
+    This is the question the caller is actually asking. Answering with a date
+    the two clubs are not due to play, on the grounds that it is the next
+    fixture in the league, answers a different question and looks ordinary.
+    """
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [
+            scheduled(rows, 0, "2025-01-11", home="Chelsea", away="Arsenal"),
+            scheduled(rows, 1, "2025-02-08", home="Arsenal", away="Chelsea"),
+        ],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    # Venue is not part of "when do these two next meet", so the earlier of the
+    # two is the answer whichever way round it is asked.
+    assert predictor.default_date("Chelsea", "Arsenal") == pd.Timestamp(
+        "2025-01-11"
+    )
+    assert predictor.default_date("Arsenal", "Chelsea") == pd.Timestamp(
+        "2025-01-11"
+    )
+
+
+def test_the_reverse_fixture_is_found_under_either_order(league_dir):
+    """A fixture listed as Arsenal v Chelsea answers a question about Chelsea v
+    Arsenal, because what is being asked is when the two clubs meet next."""
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [scheduled(rows, 0, "2025-02-08", home="Arsenal", away="Chelsea")],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    assert predictor.default_date("Chelsea", "Arsenal") == pd.Timestamp(
+        "2025-02-08"
+    )
+
+
+def test_the_default_date_falls_back_when_two_clubs_are_not_due(league_dir):
+    """A pairing with nothing scheduled falls back rather than inventing a date."""
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [scheduled(rows, 0, "2025-01-11", home="Chelsea", away="Arsenal")],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    # Wolves and Everton have no fixture left, so the next in the league is the
+    # honest answer and the fallback is what it should be.
+    assert predictor.default_date("Wolves", "Everton") == pd.Timestamp(
+        "2025-01-11"
+    )
+
+
+def test_the_default_date_falls_back_to_an_offset_in_a_finished_season(league_dir):
+    """With nothing scheduled, a week after the last match is all that is left."""
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    predictor = Predictor("PremierLeague")
+
+    assert predictor.upcoming.empty
+    assert predictor.default_date() == (
+        predictor.data_through + pd.Timedelta(days=7)
+    )
+
+
+def test_predicting_a_scheduled_fixture_uses_its_real_date(league_dir):
+    """The end-to-end path: no date given, and the answer is the fixture's date."""
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [scheduled(rows, 0, "2025-02-22", home="Arsenal", away="Chelsea")],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    prediction = predictor.predict("Arsenal", "Chelsea")
+
+    assert prediction.date == pd.Timestamp("2025-02-22")
+
+
+def test_the_next_fixture_is_read_from_the_schedule(league_dir):
+    """Callers that want to offer a fixture to pick can read it off the file."""
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [
+            scheduled(rows, 0, "2025-03-01", home="Arsenal", away="Chelsea"),
+            scheduled(rows, 1, "2025-01-11", home="Chelsea", away="Arsenal"),
+        ],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    fixture = predictor.next_fixture()
+
+    assert fixture["Date"] == pd.Timestamp("2025-01-11")
+    assert (fixture["HomeTeam"], fixture["AwayTeam"]) == ("Chelsea", "Arsenal")
+
+    # And it can be asked for from a given date onwards.
+    later = predictor.next_fixture(after=pd.Timestamp("2025-02-01"))
+
+    assert later["Date"] == pd.Timestamp("2025-03-01")
+
+
+def test_a_finished_season_has_no_next_fixture(league_dir):
+    """None rather than an error, so a caller can say there is nothing left."""
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    predictor = Predictor("PremierLeague")
+
+    assert predictor.next_fixture() is None
+
+
+def test_the_schedule_never_reaches_the_feature_pass(league_dir):
+    """Knowing a fixture is due must not put it in the form or the ratings.
+
+    A club's appearances count and its rolling windows are built from matches
+    that have happened. A fixture is a date and two clubs, and reading it as a
+    scoreless match would spend a slot in every window that follows it.
+    """
+    rows = build_rows()
+
+    write_season(league_dir, rows)
+
+    played = Predictor("PremierLeague")
+
+    add_upcoming(
+        league_dir,
+        rows,
+        [
+            scheduled(rows, 0, "2025-01-11", home="Arsenal", away="Chelsea"),
+            scheduled(rows, 1, "2025-01-11", home="Chelsea", away="Arsenal"),
+        ],
+    )
+
+    predictor = Predictor("PremierLeague")
+
+    assert len(predictor.schedule) == len(predictor.dataframe) + 2
+    assert len(predictor.dataframe) == len(played.dataframe)
+    assert predictor.appearances == played.appearances

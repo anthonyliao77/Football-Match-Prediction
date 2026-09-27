@@ -41,6 +41,7 @@ from src.data_loader import (
     played_matches,
     prediction_season,
     previous_season,
+    unplayed_matches,
 )
 from src.elo import (
     HOME_ADVANTAGE,
@@ -205,8 +206,12 @@ class Predictor:
 
     Attributes:
         league (str): The league directory name.
-        dataframe (pd.DataFrame): Every match in the league, in date order.
-        teams (list): The clubs that appear in that data.
+        schedule (pd.DataFrame): Every row in the season files, played or not.
+        dataframe (pd.DataFrame): The played matches, in date order.
+        upcoming (pd.DataFrame): The fixtures still to be played.
+        teams (list): Every club the season files mention, whether or not it
+            has played yet.
+        played_teams (list): The clubs that have at least one result.
         data_through (pd.Timestamp): The date of the most recent match.
         appearances (Counter): How many matches each club appears in.
     """
@@ -233,17 +238,36 @@ class Predictor:
         """
         self.league = resolve_league(league)
 
-        self.dataframe = played_matches(
-            load_data(LEAGUES[self.league]["football_data"])
+        # The whole file is kept as the schedule and the played rows are taken
+        # from it. The two are not the same thing and are needed for different
+        # jobs: features, Elo and appearances come from matches that have been
+        # played, while knowing which clubs the season still has to feature, and
+        # when they play, can only come from the fixtures that have not.
+        self.schedule = load_data(LEAGUES[self.league]["football_data"])
+
+        self.dataframe = played_matches(self.schedule)
+
+        self.upcoming = unplayed_matches(self.schedule)
+
+        # A club is known if the season still has it on, even if it has not won
+        # a match yet. Its first fixture of a season is the one most likely to
+        # be asked about, and refusing it because the club is new would be
+        # refusing exactly the prediction the data supports least and is needed
+        # most. The prediction carries a thin-history caveat instead.
+        self.teams = sorted(
+            set(self.schedule["HomeTeam"]) | set(self.schedule["AwayTeam"])
         )
 
-        self.teams = sorted(
+        # Counted separately, because the "N matches, M teams" line describes
+        # played data and a club awaiting its first match would make the two
+        # halves of it disagree.
+        self.played_teams = sorted(
             set(self.dataframe["HomeTeam"]) | set(self.dataframe["AwayTeam"])
         )
 
         self.data_through = self.dataframe["Date"].max()
 
-        self.season_under_prediction = prediction_season(self.dataframe)
+        self.season_under_prediction = prediction_season(self.schedule)
 
         self.validation_season = previous_season(self.season_under_prediction)
 
@@ -351,14 +375,72 @@ class Predictor:
             f"{hint}"
         )
 
-    def default_date(self) -> pd.Timestamp:
+    def default_date(
+        self, home: str | None = None, away: str | None = None
+    ) -> pd.Timestamp:
         """
         The date used when none is given.
 
+        The season files hold the rest of the schedule, so the default is read
+        from it rather than invented. A week after the last match was a guess
+        that happened to be right most weeks in midwinter and wrong across every
+        international break, at the end of a season, and any time a fixture was
+        moved. The actual date of the fixture is known, so asking for a made-up
+        one is a worse answer available.
+
+        Given both clubs, the default is the date they next meet, in either
+        venue, because that is the fixture the caller is describing. Failing
+        that, the next fixture anywhere in the league, and failing that a week
+        after the last match played, which is all that is left when the season
+        is complete and there is nothing scheduled.
+
+        Parameters:
+            home (str | None): The home team, if the fixture is known.
+            away (str | None): The away team, if the fixture is known.
+
         Returns:
-            pd.Timestamp: A week after the last match in the data.
+            pd.Timestamp: The date to predict for.
         """
+        if home and away:
+            either_way = (
+                (self.upcoming["HomeTeam"] == home)
+                & (self.upcoming["AwayTeam"] == away)
+            ) | (
+                (self.upcoming["HomeTeam"] == away)
+                & (self.upcoming["AwayTeam"] == home)
+            )
+
+            meeting = self.upcoming[either_way].sort_values("Date")
+
+            if not meeting.empty:
+                return meeting.iloc[0]["Date"]
+
+        if len(self.upcoming):
+            return self.upcoming["Date"].min()
+
         return self.data_through + pd.Timedelta(days=DEFAULT_DATE_OFFSET_DAYS)
+
+    def next_fixture(self, after: pd.Timestamp | None = None) -> pd.Series | None:
+        """
+        The next fixture on the schedule, for callers that want to pick one.
+
+        Parameters:
+            after (pd.Timestamp | None): Only fixtures from this date on, or
+                None for the whole of what is left.
+
+        Returns:
+            pd.Series | None: The fixture's row, or None when the season has
+            nothing left to play.
+        """
+        remaining = self.upcoming
+
+        if after is not None:
+            remaining = remaining[remaining["Date"] >= after]
+
+        if remaining.empty:
+            return None
+
+        return remaining.sort_values(["Date", "HomeTeam"]).iloc[0]
 
     def _parse_date(self, value) -> pd.Timestamp:
         """
@@ -576,7 +658,8 @@ class Predictor:
             home (str): The home team, as spelled in the CSVs.
             away (str): The away team, as spelled in the CSVs.
             date (str | pd.Timestamp | None): When the fixture is played.
-                Defaults to a week after the most recent match in the data.
+                Defaults to the date these two clubs next meet, or to the next
+                fixture in the league if they are not due to play.
 
         Returns:
             Prediction: The outcome probabilities, the state behind them, and
@@ -589,7 +672,7 @@ class Predictor:
                 date, which means the fixture is decided or has happened.
         """
         if date is None or (isinstance(date, str) and not date.strip()):
-            fixture_date = self.default_date()
+            fixture_date = self.default_date(home, away)
         else:
             fixture_date = self._parse_date(date)
 
@@ -615,7 +698,7 @@ class Predictor:
             date=fixture_date,
             data_through=self.data_through,
             matches=len(self.dataframe),
-            teams=len(self.teams),
+            teams=len(self.played_teams),
             probabilities={
                 MODEL_LABELS["rf"]: random_forest,
                 MODEL_LABELS["xgb"]: xgb,
